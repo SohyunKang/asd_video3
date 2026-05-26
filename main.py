@@ -14,6 +14,7 @@ from sklearn.metrics import (
     roc_auc_score
 )
 
+from tqdm import tqdm
 
 from utils import build_label_table_from_jsons
 from dataset import build_clip_table, VideoClipDataset
@@ -21,8 +22,10 @@ from model import Simple3DCNN
 
 
 class CFG:
-    json_root = "/Volumes/SAMSUNG/영유아/eyecont_results_true"
-    video_root = "/Volumes/SAMSUNG/영유아/보류군 외(정상군,고위험군,자폐군) 복호화파일"
+    # json_root = "/Volumes/SAMSUNG/영유아/eyecont_results_true"
+    # video_root = "/Volumes/SAMSUNG/영유아/보류군 외(정상군,고위험군,자폐군) 복호화파일"
+    json_root = "./data"
+    video_root = "/storage/ASD/ASD_movies/251002/아이 AI 플랫폼 1단계 상호작용 파일/영유아/보류군 외(정상군,고위험군,자폐군) 복호화파일"
 
     clip_duration = 2.0
     stride = 0.5
@@ -37,7 +40,7 @@ class CFG:
     val_ratio = 0.2
     seed = 42
 
-    batch_size = 4
+    batch_size = 16
     num_workers = 2
     epochs = 10
     lr = 1e-4
@@ -79,14 +82,20 @@ def compute_metrics(y_true, y_pred, y_prob):
 
     return metrics
 
+from sklearn.metrics import f1_score
+from tqdm import tqdm
+
 
 def train_one_epoch(model, loader, optimizer, criterion):
     model.train()
 
     total_loss = 0.0
+
     y_true, y_pred, y_prob = [], [], []
 
-    for clips, labels in loader:
+    pbar = tqdm(loader, desc="Train", leave=False)
+
+    for clips, labels in pbar:
         clips = clips.to(CFG.device)
         labels = labels.to(CFG.device)
 
@@ -107,6 +116,17 @@ def train_one_epoch(model, loader, optimizer, criterion):
         y_pred.extend(preds.cpu().numpy())
         y_prob.extend(probs.detach().cpu().numpy())
 
+        running_f1 = f1_score(
+            y_true,
+            y_pred,
+            zero_division=0
+        )
+
+        pbar.set_postfix(
+            loss=f"{loss.item():.4f}",
+            f1=f"{running_f1:.4f}"
+        )
+
     metrics = compute_metrics(y_true, y_pred, y_prob)
     metrics["loss"] = total_loss / len(loader.dataset)
 
@@ -118,9 +138,12 @@ def validate(model, loader, criterion):
     model.eval()
 
     total_loss = 0.0
+
     y_true, y_pred, y_prob = [], [], []
 
-    for clips, labels in loader:
+    pbar = tqdm(loader, desc="Val", leave=False)
+
+    for clips, labels in pbar:
         clips = clips.to(CFG.device)
         labels = labels.to(CFG.device)
 
@@ -136,11 +159,21 @@ def validate(model, loader, criterion):
         y_pred.extend(preds.cpu().numpy())
         y_prob.extend(probs.cpu().numpy())
 
+        running_f1 = f1_score(
+            y_true,
+            y_pred,
+            zero_division=0
+        )
+
+        pbar.set_postfix(
+            loss=f"{loss.item():.4f}",
+            f1=f"{running_f1:.4f}"
+        )
+
     metrics = compute_metrics(y_true, y_pred, y_prob)
     metrics["loss"] = total_loss / len(loader.dataset)
 
     return metrics
-
 
 def main():
     print("[INFO] Device:", CFG.device)
@@ -178,9 +211,6 @@ def main():
     train_clip_df.to_csv("train_clips.csv", index=False)
     val_clip_df.to_csv("val_clips.csv", index=False)
 
-
-    print(train_clip_df["label"].value_counts())
-    print(val_clip_df["label"].value_counts())
 
     train_dataset = VideoClipDataset(
         train_clip_df,
