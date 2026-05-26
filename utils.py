@@ -135,7 +135,14 @@ def build_label_table_from_jsons(
         matched_count += 1
 
         video_id = os.path.splitext(os.path.basename(json_path))[0]
-        patient_id = os.path.basename(os.path.dirname(video_path))
+        
+        filename = os.path.basename(video_path)
+        parts = filename.split("_")
+
+        if len(parts) >= 4:
+            patient_id = parts[3]
+        else:
+            patient_id = video_id
 
         events = json_to_eye_contact_events(
             json_path=json_path,

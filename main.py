@@ -25,7 +25,7 @@ class CFG:
     # json_root = "/Volumes/SAMSUNG/영유아/eyecont_results_true"
     # video_root = "/Volumes/SAMSUNG/영유아/보류군 외(정상군,고위험군,자폐군) 복호화파일"
     json_root = "./data"
-    video_root = "/storage/ASD/ASD_movies/251002/아이 AI 플랫폼 1단계 상호작용 파일/영유아/보류군 외(정상군,고위험군,자폐군) 복호화파일"
+    video_root = "./video_data"
 
     clip_duration = 2.0
     stride = 0.5
@@ -40,7 +40,7 @@ class CFG:
     val_ratio = 0.2
     seed = 42
 
-    batch_size = 16
+    batch_size = 32
     num_workers = 2
     epochs = 10
     lr = 1e-4

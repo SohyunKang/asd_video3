@@ -78,3 +78,4 @@ Thumbs.db
 
 # Ignore dataset directory
 data/
+video_data/
