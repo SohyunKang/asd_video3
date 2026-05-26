@@ -240,8 +240,13 @@ def main():
         num_workers=CFG.num_workers
     )
 
+    model = Simple3DCNN(num_classes=2)
 
-    model = Simple3DCNN(num_classes=2).to(CFG.device)
+    if torch.cuda.device_count() > 1:
+        print(f"[INFO] Using {torch.cuda.device_count()} GPUs")
+        model = nn.DataParallel(model)
+
+    model = model.to(CFG.device)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=CFG.lr)
@@ -271,7 +276,7 @@ def main():
             best_f1 = val_metrics["f1"]
 
             torch.save(
-                model.state_dict(),
+                model.module.state_dict(),
                 "best_eye_contact_3dcnn.pt"
             )
 
