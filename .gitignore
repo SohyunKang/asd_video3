@@ -79,3 +79,8 @@ Thumbs.db
 # Ignore dataset directory
 data/
 video_data/
+preprocessed_clips/
+preprocessed_clips_*/
+*.pt
+*.csv
+experiments/

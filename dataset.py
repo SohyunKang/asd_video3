@@ -3,13 +3,31 @@ import torch
 from torch.utils.data import Dataset
 
 from utils import temporal_iou, get_video_duration, read_clip
-
+import numpy as np
 
 LABEL_MAP = {
     "non_eye_contact": 0,
     "eye_contact": 1
 }
 
+class PreprocessedClipDataset(Dataset):
+    def __init__(self, clip_df):
+        self.clip_df = clip_df.reset_index(drop=True)
+
+    def __len__(self):
+        return len(self.clip_df)
+
+    def __getitem__(self, idx):
+        row = self.clip_df.iloc[idx]
+
+        frames = np.load(row["npy_path"]).astype(np.float32) / 255.0
+        frames = torch.from_numpy(frames).float()
+        frames = frames.permute(3, 0, 1, 2)  # [C, T, H, W]
+
+        label = 1 if row["label"] == "eye_contact" else 0
+        label = torch.tensor(label, dtype=torch.long)
+
+        return frames, label
 
 def build_clip_table(
     label_df,
@@ -18,7 +36,12 @@ def build_clip_table(
     stride=0.5,
     iou_label_threshold=0.5
 ):
-    split_df = label_df[label_df["split"] == split].copy()
+    if split is None:
+        split_df = label_df.copy()
+        split_name = "all"
+    else:
+        split_df = label_df[label_df["split"] == split].copy()
+        split_name = split
 
     rows = []
 
@@ -26,7 +49,7 @@ def build_clip_table(
         ["patient_id", "video_id", "video_path"]
     ].drop_duplicates()
 
-    print(f"[INFO] {split} videos: {len(videos)}")
+    print(f"[INFO] {split_name} videos: {len(videos)}")
 
     for _, video in videos.iterrows():
         duration = get_video_duration(video["video_path"])
@@ -73,7 +96,7 @@ def build_clip_table(
 
     clip_df = pd.DataFrame(rows)
 
-    print(f"[INFO] {split} clips: {len(clip_df)}")
+    print(f"[INFO] {split_name} clips: {len(clip_df)}")
     print(clip_df["label"].value_counts())
 
     return clip_df

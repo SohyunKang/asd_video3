@@ -190,7 +190,93 @@ def get_video_duration(video_path):
     return n_frames / fps
 
 
-def read_clip(video_path, start_time, clip_duration, num_frames, image_size):
+def get_person_detector():
+    from ultralytics import YOLO
+    return YOLO("yolov8n.pt")
+
+
+_PERSON_DETECTOR = None
+
+
+def crop_center(frame, crop_ratio=0.8):
+    h, w, _ = frame.shape
+
+    crop_w = int(w * crop_ratio)
+    crop_h = int(h * crop_ratio)
+
+    cx = w // 2
+    cy = h // 2
+
+    x1 = max(cx - crop_w // 2, 0)
+    x2 = min(cx + crop_w // 2, w)
+
+    y1 = max(cy - crop_h // 2, 0)
+    y2 = min(cy + crop_h // 2, h)
+
+    crop = frame[y1:y2, x1:x2]
+
+    if crop.size == 0:
+        return frame
+
+    return crop
+
+
+def crop_person_with_yolo(frame, margin=0.2, conf_threshold=0.3):
+    global _PERSON_DETECTOR
+
+    if _PERSON_DETECTOR is None:
+        _PERSON_DETECTOR = get_person_detector()
+
+    h, w, _ = frame.shape
+
+    results = _PERSON_DETECTOR(frame, verbose=False)[0]
+
+    person_boxes = []
+
+    for box in results.boxes:
+        cls = int(box.cls[0])
+        conf = float(box.conf[0])
+
+        # COCO class 0 = person
+        if cls == 0 and conf >= conf_threshold:
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            area = (x2 - x1) * (y2 - y1)
+            person_boxes.append((area, x1, y1, x2, y2))
+
+    if len(person_boxes) == 0:
+        return frame
+
+    _, x1, y1, x2, y2 = max(person_boxes, key=lambda x: x[0])
+
+    bw = x2 - x1
+    bh = y2 - y1
+
+    mx = bw * margin
+    my = bh * margin
+
+    x1 = int(max(x1 - mx, 0))
+    y1 = int(max(y1 - my, 0))
+    x2 = int(min(x2 + mx, w))
+    y2 = int(min(y2 + my, h))
+
+    crop = frame[y1:y2, x1:x2]
+
+    if crop.size == 0:
+        return frame
+
+    return crop
+
+
+def read_clip(
+    video_path,
+    start_time,
+    clip_duration,
+    num_frames,
+    image_size,
+    crop_mode="center",
+    crop_ratio=0.8,
+    person_margin=0.2,
+):
     cap = cv2.VideoCapture(video_path)
 
     if not cap.isOpened():
@@ -220,6 +306,23 @@ def read_clip(video_path, start_time, clip_duration, num_frames, image_size):
                 frame = np.zeros((image_size, image_size, 3), dtype=np.uint8)
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        if crop_mode == "center":
+            frame = crop_center(frame, crop_ratio=crop_ratio)
+
+        elif crop_mode == "person":
+            frame = crop_person_with_yolo(
+                frame,
+                margin=person_margin,
+                conf_threshold=0.3
+            )
+
+        elif crop_mode == "none":
+            pass
+
+        else:
+            raise ValueError(f"Unknown crop_mode: {crop_mode}")
+
         frame = cv2.resize(frame, (image_size, image_size))
 
         frames.append(frame)
