@@ -22,7 +22,6 @@ LABEL_ROOT = "./labels"
 RESULT_TRUE_ROOT = "/storage/sohyunkang/eyecont_results_true"
 RESULT_FALSE_ROOT = "/storage/sohyunkang/eyecont_results_false"
 
-
 MODEL_PATH = "face_landmarker.task"
 EMOTION_MODEL_NAME = "trpakov/vit-face-expression"
 
