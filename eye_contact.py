@@ -10,16 +10,27 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
+from PIL import Image
+from transformers import pipeline
+
 import time
+import shutil
 
 
-VIDEO_ROOT = "/Volumes/SAMSUNG/영유아/보류군 외(정상군,고위험군,자폐군) 복호화파일"
-LABEL_ROOT = "/Volumes/SAMSUNG/영유아/labels"
-RESULT_TRUE_ROOT = "/Volumes/SAMSUNG/영유아/eyecont_results_true"
-RESULT_FALSE_ROOT = "/Volumes/SAMSUNG/영유아/eyecont_results_false"
+VIDEO_ROOT = "./video_data"
+LABEL_ROOT = "./labels"
+RESULT_TRUE_ROOT = "/storage/sohyunkang/eyecont_results_true"
+RESULT_FALSE_ROOT = "/storage/sohyunkang/eyecont_results_false"
 
 
 MODEL_PATH = "face_landmarker.task"
+EMOTION_MODEL_NAME = "trpakov/vit-face-expression"
+
+emotion_classifier = pipeline(
+    "image-classification",
+    model=EMOTION_MODEL_NAME,
+    device=0  # GPU 사용. CPU면 -1
+)
 
 DETECT_SCALE = 3.0   # 얼굴 detection용 확대 배율. 2.0~3.0 추천
 
@@ -519,6 +530,46 @@ def detect_face_on_center_zoom(
 
     return landmarks
 
+def classify_emotion_from_face(frame, bbox, top_k=3):
+    """
+    frame: BGR 원본 frame
+    bbox: (x1, y1, x2, y2)
+    """
+
+    x1, y1, x2, y2 = bbox
+
+    h, w = frame.shape[:2]
+
+    margin = 0.15
+
+    bw = x2 - x1
+    bh = y2 - y1
+
+    mx = int(bw * margin)
+    my = int(bh * margin)
+
+    x1 = max(x1 - mx, 0)
+    y1 = max(y1 - my, 0)
+    x2 = min(x2 + mx, w - 1)
+    y2 = min(y2 + my, h - 1)
+
+    face_crop = frame[y1:y2, x1:x2]
+
+    if face_crop.size == 0:
+        return None
+
+    face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(face_rgb)
+
+    results = emotion_classifier(pil_img, top_k=top_k)
+
+    return [
+        {
+            "label": r["label"],
+            "score": float(r["score"])
+        }
+        for r in results
+    ]
 
 def process_video_single_crop(video_path, crop_ratio):
     has_pupil_detection = False
@@ -598,6 +649,29 @@ def process_video_single_crop(video_path, crop_ratio):
                 y1 = max(min(ys), 0)
                 x2 = min(max(xs), width - 1)
                 y2 = min(max(ys), height - 1)
+
+                emotion = classify_emotion_from_face(
+                    frame=frame,
+                    bbox=(x1, y1, x2, y2),
+                    top_k=3
+                )
+
+                record["emotion"] = emotion
+
+                if emotion is not None and len(emotion) > 0:
+                    emo_label = emotion[0]["label"]
+                    emo_score = emotion[0]["score"]
+
+                    cv2.putText(
+                        frame,
+                        f"EMO: {emo_label} ({emo_score:.2f})",
+                        (x1, min(y2 + 25, height - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (255, 0, 255),
+                        2,
+                        cv2.LINE_AA
+                    )
 
                 cv2.rectangle(
                     frame,
@@ -754,10 +828,10 @@ def process_video(video_path):
             )
 
             if os.path.exists(temp_json):
-                os.replace(temp_json, final_true_json)
+                shutil.move(temp_json, final_true_json)
 
             if os.path.exists(temp_video):
-                os.replace(temp_video, final_true_video)
+                shutil.move(temp_video, final_true_video)
 
             # 성공한 crop 외 이전 실패 crop 임시 파일 삭제
             for j, v in temp_files:
@@ -782,10 +856,10 @@ def process_video(video_path):
     )
 
     if last_json is not None and os.path.exists(last_json):
-        os.replace(last_json, final_false_json)
+        shutil.move(last_json, final_false_json)
 
     if last_video is not None and os.path.exists(last_video):
-        os.replace(last_video, final_false_video)
+        shutil.move(last_video, final_false_video)
 
     # 마지막 false 저장본 외 이전 crop 임시 파일 삭제
     for j, v in temp_files:
