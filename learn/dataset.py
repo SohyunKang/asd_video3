@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from utils import temporal_iou, get_video_duration, read_clip
+from learn.utils import temporal_iou, get_video_duration, read_clip
 import numpy as np
 
 LABEL_MAP = {

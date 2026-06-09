@@ -16,6 +16,12 @@ from sklearn.metrics import (
     roc_auc_score
 )
 
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 from tqdm import tqdm
 
 from utils import build_label_table_from_jsons
@@ -27,7 +33,7 @@ class CFG:
     # video_root = "/Volumes/SAMSUNG/영유아/보류군 외(정상군,고위험군,자폐군) 복호화파일"
     json_root = "/storage/json_data"
     video_root = "/storage/sohyunkang/video_data"
-    clip_csv_path = "preprocessed_clips_person_1.0_8.csv"
+    clip_csv_path = "./preprocessing/results/preprocessed_clips_person_1.0_8.csv"
     checkpoint_path = './experiments'
     model_name = "timesformer"  # "3dcnn", "timesformer"
 

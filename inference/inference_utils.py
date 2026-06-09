@@ -2,7 +2,7 @@ import torch
 import pandas as pd
 from tqdm import tqdm
 
-from utils import read_clip, get_video_duration
+from learn.utils import read_clip, get_video_duration
 
 
 @torch.no_grad()

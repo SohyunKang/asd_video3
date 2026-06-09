@@ -1,12 +1,19 @@
 import torch
 import pandas as pd
 
-from model import build_model
-from inference_codes.inference_utils import predict_video_segments
+from pathlib import Path
+import sys
+import os
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from learn.model import build_model
+from inference_utils import predict_video_segments
 
 
 class CFG:
-    checkpoint_path = "./best_model.pth"
+    checkpoint_path = "./experiments/best_model_preprocessed_clips_person_2.0_16.pt"
 
     device = "cuda"
 
@@ -22,8 +29,8 @@ class CFG:
     threshold = 0.4
 
 
-video_path = "./video_data/IF2001_3_1_1023101971_0.mp4.mp4"
-inference_path = "./inference_results"
+video_path = "/storage/sohyunkang/video_data/IF2001_3_1_1023101971_0.mp4.mp4"
+inference_path = "./inference/results"
 
 if not os.path.exists(inference_path):
     os.makedirs(inference_path)

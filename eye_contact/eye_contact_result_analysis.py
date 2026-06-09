@@ -34,15 +34,15 @@ JSON_DIRS = [
     r"/storage/sohyunkang/eyecont_results_false",
 ]
 
-EXCEL_PATH = r"rpmp_검사지_result_20241219.xlsx"
+EXCEL_PATH = r"./demographics/rpmp_검사지_result_20241219.xlsx"
 
-OUTPUT_FEATURES = "eye_contact_features.xlsx"
-OUTPUT_GROUP_SUMMARY = "group_summary.xlsx"
-OUTPUT_POSTHOC = "posthoc_dunn.xlsx"
-OUTPUT_EMOTION_GROUP = "emotion_group_comparison.xlsx"
-OUTPUT_MISSING_GROUP = "missing_group_subjects.xlsx"
-TARGET_LIST_XLSX = "251216_EXACT_FILENAMES.xlsx"
-OUTPUT_NOT_IN_DATA = "excluded_not_in_data.xlsx"
+OUTPUT_FEATURES = "./eye_contact/results/eye_contact_features.xlsx"
+OUTPUT_GROUP_SUMMARY = "./eye_contact/results/group_summary.xlsx"
+OUTPUT_POSTHOC = "./eye_contact/results/posthoc_dunn.xlsx"
+OUTPUT_EMOTION_GROUP = "./eye_contact/results/emotion_group_comparison.xlsx"
+OUTPUT_MISSING_GROUP = "./eye_contact/results/missing_group_subjects.xlsx"
+TARGET_LIST_XLSX = "./demographics/251216_EXACT_FILENAMES.xlsx"
+OUTPUT_NOT_IN_DATA = "./eye_contact/results/excluded_not_in_data.xlsx"
 
 ID_COL = "연구대상자ID"
 GROUP_COL = "구분"
@@ -575,7 +575,7 @@ print(file_summary_df.groupby("group")["patient_id"].nunique())
 # 제외/포함 목록 저장
 # =========================
 
-OUTPUT_DATA_AUDIT = "data_inclusion_audit.xlsx"
+OUTPUT_DATA_AUDIT = "./eye_contact/results/data_inclusion_audit.xlsx"
 
 with pd.ExcelWriter(OUTPUT_DATA_AUDIT) as writer:
     exact_exist_df.to_excel(writer, sheet_name="exact_exist", index=False)
@@ -786,7 +786,7 @@ from scipy.stats import ttest_ind
 from itertools import combinations
 from pathlib import Path
 
-OUTPUT_FIG_DIR = Path("eye_contact_figures")
+OUTPUT_FIG_DIR = Path("./eye_contact/results/eye_contact_figures")
 OUTPUT_FIG_DIR.mkdir(exist_ok=True)
 
 GROUP_ORDER = ["정상군", "고위험군", "자폐군"]
@@ -854,7 +854,7 @@ for g1, g2 in combinations(group_order_used, 2):
         })
 
 ttest_df = pd.DataFrame(ttest_results)
-ttest_df.to_excel("eye_contact_duration_ttest.xlsx", index=False)
+ttest_df.to_excel("./eye_contact/results/eye_contact_duration_ttest.xlsx", index=False)
 
 
 # -------------------------------------------------
@@ -909,7 +909,7 @@ plt.tight_layout()
 plt.savefig(OUTPUT_FIG_DIR / "bar_eye_contact_presence_percentage.png", dpi=300)
 plt.close()
 
-presence_summary.to_excel("eye_contact_presence_percentage.xlsx", index=False)
+presence_summary.to_excel("./eye_contact/results/eye_contact_presence_percentage.xlsx", index=False)
 
 
 # -------------------------------------------------
@@ -983,7 +983,7 @@ for _, row in emotion_group_summary.iterrows():
     )
     plt.close()
 
-emotion_group_summary.to_excel("emotion_distribution_by_group.xlsx", index=False)
+emotion_group_summary.to_excel("./eye_contact/results/emotion_distribution_by_group.xlsx", index=False)
 
 
 print("\n추가 plot 및 t-test 완료")

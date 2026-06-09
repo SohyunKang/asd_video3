@@ -13,7 +13,7 @@ from xgboost import XGBClassifier
 # Load
 # =========================
 
-df = pd.read_excel("eye_contact_features.xlsx")
+df = pd.read_excel("./eye_contact/results/eye_contact_features.xlsx")
 
 # ASD vs 정상군만 사용
 df = df[df["group"].isin(["자폐군", "정상군"])].copy()

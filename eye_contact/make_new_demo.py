@@ -7,18 +7,18 @@ import pandas as pd
 # 경로 설정
 # =========================
 
-VIDEO_DIR = Path("/home/sohyunkang/asd_video3/video_data")
+VIDEO_DIR = Path("/storage/sohyunkang/video_data")
 
 JSON_DIRS = [
     Path("/storage/sohyunkang/eyecont_results_true"),
     Path("/storage/sohyunkang/eyecont_results_false"),
 ]
 
-TARGET_LIST_XLSX = "251216_EXACT_FILENAMES.xlsx"
+TARGET_LIST_XLSX = "./demographics/251216_EXACT_FILENAMES.xlsx"
 
-EXCEL_PATH = "rpmp_검사지_result_20241219.xlsx"
+EXCEL_PATH = "./demographics/rpmp_검사지_result_20241219.xlsx"
 
-OUTPUT_XLSX = "260609_new_demo.xlsx"
+OUTPUT_XLSX = "./demographics/260609_new_demo.xlsx"
 
 ID_COL = "연구대상자ID"
 GROUP_COL = "구분"
@@ -276,6 +276,7 @@ result_df = result_df.merge(
     how="left"
 )
 
+
 # =========================
 # 컬럼 순서 정리
 # =========================
@@ -312,17 +313,90 @@ result_df.to_excel(
     OUTPUT_XLSX,
     index=False
 )
+rpmp_ids = set(subject_info["SUBJECT"])
 
-print("\n저장 완료")
+json_exists_df = result_df[
+    result_df["EYE_CONTACT_JSON_EXISTS"]
+].copy()
+
+json_not_exists_df = result_df[
+    ~result_df["EYE_CONTACT_JSON_EXISTS"]
+].copy()
+
+json_in_exact_df = json_exists_df[
+    json_exists_df["IN_EXACT_LIST"]
+].copy()
+
+json_not_in_exact_df = json_exists_df[
+    ~json_exists_df["IN_EXACT_LIST"]
+].copy()
+
+# EXACT 포함
+exact_in_rpmp_missing = (
+    ~json_in_exact_df["SUBJECT"].isin(rpmp_ids)
+).sum()
+
+exact_in_group_missing = (
+    json_in_exact_df["SUBJECT"].isin(rpmp_ids)
+    & json_in_exact_df["GROUP"].isna()
+).sum()
+
+exact_in_hold = (
+    json_in_exact_df["GROUP"] == "보류"
+).sum()
+
+# EXACT 미포함
+exact_out_rpmp_missing = (
+    ~json_not_in_exact_df["SUBJECT"].isin(rpmp_ids)
+).sum()
+
+exact_out_group_missing = (
+    json_not_in_exact_df["SUBJECT"].isin(rpmp_ids)
+    & json_not_in_exact_df["GROUP"].isna()
+).sum()
+
+exact_out_hold = (
+    json_not_in_exact_df["GROUP"] == "보류"
+).sum()
+
+final_analysis_df = json_in_exact_df[
+    json_in_exact_df["SUBJECT"].isin(rpmp_ids)
+    & json_in_exact_df["GROUP"].notna()
+    & (json_in_exact_df["GROUP"] != "보류")
+].copy()
+
+print("\n========================================")
+print("저장 완료")
+print("========================================")
+
 print(f"파일: {OUTPUT_XLSX}")
+
+print("\n[VIDEO_DATA]")
 print(f"VIDEO_DATA mp4 수: {len(result_df)}")
-print(f"JSON 존재 수: {result_df['EYE_CONTACT_JSON_EXISTS'].sum()}")
-print(f"JSON 없음 수: {(~result_df['EYE_CONTACT_JSON_EXISTS']).sum()}")
-print(f"EXACT 포함 수: {result_df['IN_EXACT_LIST'].sum()}")
-print(f"EXACT 미포함 수: {(~result_df['IN_EXACT_LIST']).sum()}")
 
-print("\nRPMP 매칭 안 된 행 수:")
-print(result_df["AGE"].isna().sum())
+print("\n[JSON]")
+print(f"JSON 존재 수: {len(json_exists_df)}")
+print(f"JSON 없음 수: {len(json_not_exists_df)}")
 
-print("\nGROUP별 개수:")
-print(result_df["GROUP"].value_counts(dropna=False))
+print("\n[JSON 존재 + EXACT 포함]")
+print(f"수: {len(json_in_exact_df)}")
+print(f"RPMP ID 없음: {exact_in_rpmp_missing}")
+print(f"RPMP ID 있음 + GROUP 없음: {exact_in_group_missing}")
+print(f"보류: {exact_in_hold}")
+
+print("\n[JSON 존재 + EXACT 미포함]")
+print(f"수: {len(json_not_in_exact_df)}")
+print(f"RPMP ID 없음: {exact_out_rpmp_missing}")
+print(f"RPMP ID 있음 + GROUP 없음: {exact_out_group_missing}")
+print(f"보류: {exact_out_hold}")
+
+print("\n[최종 분석 포함]")
+print(f"수: {len(final_analysis_df)}")
+
+print("\nGROUP별 개수 (최종 분석 포함)")
+print(
+    final_analysis_df["GROUP"]
+    .value_counts(dropna=False)
+)
+
+print("\n========================================")

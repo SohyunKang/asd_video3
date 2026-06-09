@@ -5,13 +5,19 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from utils import build_label_table_from_jsons, read_clip
-from dataset import build_clip_table
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from learn.utils import build_label_table_from_jsons, read_clip
+from learn.dataset import build_clip_table
 
 
 class CFG:
     json_root = "./data"
-    video_root = "./video_data"
+    video_root = "/storage/sohyunkang/video_data"
 
     clip_duration = 2.0
     stride = 0.5
@@ -58,7 +64,7 @@ with open(config_path, "w") as f:
 
 print(f"[INFO] Saved config: {config_path}")
 
-csv_path = f"preprocessed_clips_{CFG.crop_mode}_{CFG.clip_duration}_{CFG.num_frames}.csv"
+csv_path = f"./preprocessing/results/preprocessed_clips_{CFG.crop_mode}_{CFG.clip_duration}_{CFG.num_frames}.csv"
 
 
 processed_rows = []
