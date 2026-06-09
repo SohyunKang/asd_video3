@@ -2,7 +2,7 @@ import torch
 import pandas as pd
 
 from model import build_model
-from inference_utils import predict_video_segments
+from inference_codes.inference_utils import predict_video_segments
 
 
 class CFG:

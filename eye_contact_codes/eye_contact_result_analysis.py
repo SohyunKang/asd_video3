@@ -272,61 +272,69 @@ def run_dunn_safe(df, metric, group_col="group"):
         return None
 
 # =========================
-# 1. JSON 파일 읽기
+# 1. JSON 파일 읽기 + 대상 여부 정리
 # =========================
 
-# =========================
-# 분석 대상 파일 목록 읽기
-# xlsx 첫 번째 열:
-# IF2001_1_1_1023092434_0
-# =========================
-
-target_df = pd.read_excel(
-    TARGET_LIST_XLSX,
-    header=None
-)
+target_df = pd.read_excel(TARGET_LIST_XLSX, header=None)
 
 valid_file_ids = set()
-
 for fname in target_df.iloc[:, 0].dropna():
-
     fname = str(fname).strip()
-
     valid_file_ids.add(fname)
 
-print(f"\n대상 목록 XLSX 파일 수: {len(valid_file_ids)}")
+print(f"\n[1] Exact 대상 목록 파일 수: {len(valid_file_ids)}")
 
 all_segments = []
 file_summary_rows = []
+
 excluded_filename_rows = []
-excluded_not_in_data_rows = []
+exact_exist_rows = []
+exact_not_exist_rows = []
+
+json_total_count = 0
+json_pattern_match_count = 0
 
 for folder in JSON_DIRS:
     folder = Path(folder)
 
-    for json_path in folder.glob("*.json"):
+    json_files = list(folder.glob("*.json"))
+    print(f"[1] JSON 폴더: {folder}")
+    print(f"    JSON 파일 수: {len(json_files)}")
+
+    for json_path in json_files:
+        json_total_count += 1
+
         match = FILENAME_PATTERN.match(json_path.name)
 
         if match is None:
             excluded_filename_rows.append({
+                "folder": str(folder),
                 "file_name": json_path.name,
                 "reason": "filename_pattern_mismatch"
             })
-            print(f"파일명 형식 불일치로 제외: {json_path.name}")
             continue
 
-        file_id = json_path.stem
+        json_pattern_match_count += 1
 
-        if file_id not in valid_file_ids:
-            excluded_not_in_data_rows.append({
-                "file_name": json_path.name,
-                "file_id": file_id,
-                "patient_id": str(match.group("patient_id")),
-                "reason": "not_in_data_folder"
+        file_id = json_path.stem
+        patient_id = str(match.group("patient_id"))
+
+        base_row = {
+            "folder": str(folder),
+            "file_name": json_path.name,
+            "file_id": file_id,
+            "patient_id": patient_id,
+        }
+
+        if file_id in valid_file_ids:
+            exact_exist_rows.append(base_row)
+        else:
+            exact_not_exist_rows.append({
+                **base_row,
+                "reason": "not_in_exact_list"
             })
             continue
 
-        patient_id = str(match.group("patient_id"))
         data = load_json(json_path)
 
         video_duration_sec = get_video_duration_sec(data)
@@ -399,7 +407,10 @@ for folder in JSON_DIRS:
 
         file_summary_rows.append({
             "file_name": json_path.name,
+            "file_id": file_id,
             "patient_id": patient_id,
+            "folder": str(folder),
+            "in_exact_list": True,
             "video_duration_sec": video_duration_sec,
             "eye_contact_count": eye_contact_count,
             "total_eye_contact_sec": total_eye_contact_sec,
@@ -416,6 +427,23 @@ for folder in JSON_DIRS:
 features_df = pd.DataFrame(all_segments)
 file_summary_df = pd.DataFrame(file_summary_rows)
 
+exact_exist_df = pd.DataFrame(exact_exist_rows)
+exact_not_exist_df = pd.DataFrame(exact_not_exist_rows)
+excluded_filename_df = pd.DataFrame(excluded_filename_rows)
+
+print("\n[1] JSON 전체 요약")
+print(f"전체 JSON 파일 수: {json_total_count}")
+print(f"파일명 패턴 일치 JSON 수: {json_pattern_match_count}")
+print(f"파일명 패턴 불일치 JSON 수: {len(excluded_filename_df)}")
+print(f"Exact 목록에 존재하는 JSON 수: {len(exact_exist_df)}")
+print(f"Exact 목록에 존재하지 않는 JSON 수: {len(exact_not_exist_df)}")
+
+if len(exact_exist_df) > 0:
+    print(f"Exact 존재 대상자 수: {exact_exist_df['patient_id'].nunique()}")
+
+if len(exact_not_exist_df) > 0:
+    print(f"Exact 미존재 대상자 수: {exact_not_exist_df['patient_id'].nunique()}")
+
 
 # =========================
 # 2. 엑셀에서 group 정보 붙이기
@@ -429,6 +457,12 @@ group_df[GROUP_COL] = group_df[GROUP_COL].astype(str).str.strip()
 features_df["patient_id"] = features_df["patient_id"].astype(str).str.strip()
 file_summary_df["patient_id"] = file_summary_df["patient_id"].astype(str).str.strip()
 
+if len(exact_exist_df) > 0:
+    exact_exist_df["patient_id"] = exact_exist_df["patient_id"].astype(str).str.strip()
+
+if len(exact_not_exist_df) > 0:
+    exact_not_exist_df["patient_id"] = exact_not_exist_df["patient_id"].astype(str).str.strip()
+
 group_df = group_df[[ID_COL, GROUP_COL]].drop_duplicates()
 
 features_df = features_df.merge(
@@ -437,7 +471,6 @@ features_df = features_df.merge(
     right_on=ID_COL,
     how="left"
 )
-
 features_df = features_df.rename(columns={GROUP_COL: "group"})
 features_df = features_df.drop(columns=[ID_COL])
 
@@ -447,29 +480,82 @@ file_summary_df = file_summary_df.merge(
     right_on=ID_COL,
     how="left"
 )
-
 file_summary_df = file_summary_df.rename(columns={GROUP_COL: "group"})
 file_summary_df = file_summary_df.drop(columns=[ID_COL])
 
+exact_exist_df = exact_exist_df.merge(
+    group_df,
+    left_on="patient_id",
+    right_on=ID_COL,
+    how="left"
+).rename(columns={GROUP_COL: "group"})
+
+if ID_COL in exact_exist_df.columns:
+    exact_exist_df = exact_exist_df.drop(columns=[ID_COL])
+
+exact_not_exist_df = exact_not_exist_df.merge(
+    group_df,
+    left_on="patient_id",
+    right_on=ID_COL,
+    how="left"
+).rename(columns={GROUP_COL: "group"})
+
+if ID_COL in exact_not_exist_df.columns:
+    exact_not_exist_df = exact_not_exist_df.drop(columns=[ID_COL])
+
 
 # =========================
-# 3. 엑셀에 없는 대상자 제외
+# 3. 제외 대상 정리
 # =========================
-
-missing_group_df = (
-    file_summary_df[file_summary_df["group"].isna()]
-    [["file_name", "patient_id"]]
-    .drop_duplicates()
-    .sort_values(["patient_id", "file_name"])
-)
-
-if len(missing_group_df) > 0:
-    missing_group_df.to_excel(OUTPUT_MISSING_GROUP, index=False)
 
 file_summary_df_all = file_summary_df.copy()
 features_df_all = features_df.copy()
 
-# 보류 그룹 제외
+missing_group_exact_exist_df = (
+    exact_exist_df[exact_exist_df["group"].isna()]
+    .sort_values(["patient_id", "file_name"])
+    .copy()
+)
+
+missing_group_exact_not_exist_df = (
+    exact_not_exist_df[exact_not_exist_df["group"].isna()]
+    .sort_values(["patient_id", "file_name"])
+    .copy()
+)
+
+hold_group_exact_exist_df = (
+    exact_exist_df[exact_exist_df["group"] == "보류"]
+    .sort_values(["patient_id", "file_name"])
+    .copy()
+)
+
+hold_group_exact_not_exist_df = (
+    exact_not_exist_df[exact_not_exist_df["group"] == "보류"]
+    .sort_values(["patient_id", "file_name"])
+    .copy()
+)
+
+print("\n[2] RPMP group 정보 요약")
+print(f"Exact 존재 중 group 없음 파일 수: {len(missing_group_exact_exist_df)}")
+print(f"Exact 존재 중 group 없음 대상자 수: {missing_group_exact_exist_df['patient_id'].nunique() if len(missing_group_exact_exist_df) > 0 else 0}")
+print(f"Exact 미존재 중 group 없음 파일 수: {len(missing_group_exact_not_exist_df)}")
+print(f"Exact 미존재 중 group 없음 대상자 수: {missing_group_exact_not_exist_df['patient_id'].nunique() if len(missing_group_exact_not_exist_df) > 0 else 0}")
+
+print("\n[3] 보류 그룹 요약")
+print(f"Exact 존재 중 보류 파일 수: {len(hold_group_exact_exist_df)}")
+print(f"Exact 존재 중 보류 대상자 수: {hold_group_exact_exist_df['patient_id'].nunique() if len(hold_group_exact_exist_df) > 0 else 0}")
+print(f"Exact 미존재 중 보류 파일 수: {len(hold_group_exact_not_exist_df)}")
+print(f"Exact 미존재 중 보류 대상자 수: {hold_group_exact_not_exist_df['patient_id'].nunique() if len(hold_group_exact_not_exist_df) > 0 else 0}")
+
+# 실제 분석에서는 기존처럼 group 없음 + 보류 제외
+file_summary_df = file_summary_df[
+    file_summary_df["group"].notna()
+].copy()
+
+features_df = features_df[
+    features_df["group"].notna()
+].copy()
+
 file_summary_df = file_summary_df[
     file_summary_df["group"] != "보류"
 ].copy()
@@ -478,9 +564,53 @@ features_df = features_df[
     features_df["group"] != "보류"
 ].copy()
 
-# group 없는 경우 제외
-file_summary_df = file_summary_df.dropna(subset=["group"]).copy()
-features_df = features_df.dropna(subset=["group"]).copy()
+print("\n[4] 최종 분석 포함 데이터")
+print(f"최종 분석 파일 수: {file_summary_df['file_name'].nunique()}")
+print(f"최종 분석 대상자 수: {file_summary_df['patient_id'].nunique()}")
+print("최종 분석 그룹별 대상자 수:")
+print(file_summary_df.groupby("group")["patient_id"].nunique())
+
+
+# =========================
+# 제외/포함 목록 저장
+# =========================
+
+OUTPUT_DATA_AUDIT = "data_inclusion_audit.xlsx"
+
+with pd.ExcelWriter(OUTPUT_DATA_AUDIT) as writer:
+    exact_exist_df.to_excel(writer, sheet_name="exact_exist", index=False)
+    exact_not_exist_df.to_excel(writer, sheet_name="exact_not_exist", index=False)
+
+    missing_group_exact_exist_df.to_excel(
+        writer,
+        sheet_name="missing_group_exact_exist",
+        index=False
+    )
+    missing_group_exact_not_exist_df.to_excel(
+        writer,
+        sheet_name="missing_group_exact_not_exist",
+        index=False
+    )
+
+    hold_group_exact_exist_df.to_excel(
+        writer,
+        sheet_name="hold_group_exact_exist",
+        index=False
+    )
+    hold_group_exact_not_exist_df.to_excel(
+        writer,
+        sheet_name="hold_group_exact_not_exist",
+        index=False
+    )
+
+    if len(excluded_filename_df) > 0:
+        excluded_filename_df.to_excel(
+            writer,
+            sheet_name="filename_pattern_mismatch",
+            index=False
+        )
+
+print(f"\n포함/제외 점검 파일 저장: {OUTPUT_DATA_AUDIT}")
 
 # =========================
 # 4. segment feature 저장
@@ -567,9 +697,6 @@ with pd.ExcelWriter(OUTPUT_GROUP_SUMMARY) as writer:
     patient_summary.to_excel(writer, sheet_name="patient_summary", index=False)
     group_summary.to_excel(writer, sheet_name="group_summary", index=False)
 
-    if len(missing_group_df) > 0:
-        missing_group_df.to_excel(writer, sheet_name="excluded_no_group", index=False)
-
 
 # =========================
 # 6. Eye contact 그룹 비교
@@ -643,12 +770,6 @@ print(f"Emotion group comparison file: {OUTPUT_EMOTION_GROUP}")
 print("\n분석에 포함된 대상자 수:")
 print(patient_summary.groupby("group")["patient_id"].nunique())
 
-if len(missing_group_df) > 0:
-    print("\n[제외됨] 엑셀에 group 정보가 없는 대상자/파일:")
-    print(missing_group_df.to_string(index=False))
-    print(f"\n제외 목록 저장: {OUTPUT_MISSING_GROUP}")
-else:
-    print("\n엑셀에 없는 대상자는 없습니다.")
 
 if len(excluded_filename_rows) > 0:
     excluded_filename_df = pd.DataFrame(excluded_filename_rows)
@@ -873,19 +994,4 @@ print("3) pie_emotion_distribution_정상군/고위험군/자폐군.png")
 print("4) eye_contact_duration_ttest.xlsx")
 print("5) eye_contact_presence_percentage.xlsx")
 print("6) emotion_distribution_by_group.xlsx")
-
-
-if len(excluded_not_in_data_rows) > 0:
-    excluded_not_in_data_df = pd.DataFrame(excluded_not_in_data_rows)
-    excluded_not_in_data_df.to_excel(OUTPUT_NOT_IN_DATA, index=False)
-
-    print("\n[제외됨] ./data 안에 같은 이름의 json이 없는 파일:")
-    print(f"제외 파일 수: {len(excluded_not_in_data_df)}")
-    print(f"제외 대상자 수: {excluded_not_in_data_df['patient_id'].nunique()}")
-    print(f"제외 목록 저장: {OUTPUT_NOT_IN_DATA}")
-else:
-    print("\n./data 기준으로 제외된 파일은 없습니다.")
-
-print(f"\n./data 기준 분석 대상 파일 수: {len(valid_file_ids)}")
-print(f"실제로 분석된 파일 수: {file_summary_df_all['file_name'].nunique()}")
-print(f"실제로 분석된 대상자 수: {file_summary_df_all['patient_id'].nunique()}")
+    
