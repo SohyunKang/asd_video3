@@ -1,76 +1,56 @@
-import torch
-import torch.nn as nn
+import json
+import os
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-import os
-import json
-
+import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    roc_auc_score
-)
+from sklearn.metrics import f1_score
 
-from pathlib import Path
-import sys
+from sklearn.model_selection import train_test_split
+from tqdm import tqdm
+from datetime import datetime
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from tqdm import tqdm
-
-from utils import build_label_table_from_jsons
-from dataset import build_clip_table, VideoClipDataset, PreprocessedClipDataset, VideoDiagnosisDataset
+from dataset import (
+    PreprocessedClipDataset,
+    VideoDiagnosisDataset,
+)
+from losses import FocalLoss
 from model import build_model
+from metrics import compute_metrics
 
 class CFG:
     video_root = "/storage/sohyunkang/video_data"
     clip_csv_path = "./preprocessing/results/preprocessed_clips_person_1.0_8.csv"
     checkpoint_path = './experiments'
     model_name = "timesformer"  # "3dcnn", "timesformer"
-    # 추가
+
     label_mode = "diagnosis_labels"
     # "pseudo_labels" or "annotated_labels" or "diagnosis_labels"
     video_level = True
 
-    diagnosis_excel_path = "./demographics/rpmp_검사지_result_20241219.xlsx"
-    diagnosis_id_col = "연구대상자ID"
-    diagnosis_group_col = "구분"
-
-    diagnosis_label_map = {
-        "정상군": 0,
-        "자폐군": 1,
-    }
+    freeze_encoder = False
 
     num_classes = 2
-    annotated_excel_path = "./demographics/0607 호명_시간기록.xlsx"
-
-    annotated_id_col = "연구대상자ID"
-    annotated_start_col = "눈맞춤시작"
-    annotated_end_col = "눈맞춤끝"
-
-    clip_start_col = "clip_start"
-    clip_end_col = "clip_end"
-
-    freeze_encoder = False
 
     iou_label_threshold = 0.5
 
-    min_event_duration_sec = 0.3
-    max_gap_sec = 0.2
-
-    val_ratio = 0.2
     seed = 42
 
     batch_size = 2
     num_workers = 0
+
     epochs = 15
-    lr = 1e-4
+
+    encoder_lr = 1e-5
+    head_lr = 1e-4
 
     debug_mode = False
     debug_train_n = 8000
@@ -78,25 +58,6 @@ class CFG:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=None, gamma=2.0):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-
-    def forward(self, logits, targets):
-        ce_loss = nn.functional.cross_entropy(
-            logits,
-            targets,
-            weight=self.alpha,
-            reduction="none"
-        )
-
-        pt = torch.exp(-ce_loss)
-        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
-
-        return focal_loss.mean()
-    
 def parse_time_to_sec(value):
     """
     지원 예:
@@ -141,17 +102,16 @@ def parse_time_to_sec(value):
     return None
 
 def add_diagnosis_labels_from_rpmp(
-    clip_df,
-    excel_path,
-    id_col="연구대상자ID",
-    group_col="구분",
-    label_map=None
-):
-    if label_map is None:
-        label_map = {
-            "정상군": 0,
-            "자폐군": 1,
-        }
+    clip_df):
+
+    label_map = {
+        "정상군": 0,
+        "자폐군": 1,
+    }
+
+    excel_path = "./demographics/rpmp_검사지_result_20241219.xlsx"
+    id_col = "연구대상자ID"
+    group_col = "구분"
 
     clip_df = clip_df.copy()
 
@@ -202,12 +162,10 @@ def add_diagnosis_labels_from_rpmp(
 
     clip_df = clip_df.drop(columns=[id_col])
 
-    print("[INFO] Diagnosis label mode: 정상군 vs 자폐군")
-    print(f"[INFO] clips: {before_n} -> {after_n}")
+    print("[INFO] Diagnosis label mode: 정상군 (0) vs 자폐군 (1)")
+    print(f"[INFO] clips: {before_n} -> {after_n} after merging with RPMP")
     print("[INFO] label counts:")
     print(clip_df["label"].value_counts())
-    print("[INFO] target counts:")
-    print(clip_df["target"].value_counts().sort_index())
     print("[INFO] subjects per group:")
     print(
         clip_df.groupby("label")["patient_id"]
@@ -219,12 +177,6 @@ def add_diagnosis_labels_from_rpmp(
 
 def add_annotated_labels_from_excel(
     clip_df,
-    excel_path,
-    id_col="연구대상자ID",
-    start_col="눈맞춤시작",
-    end_col="눈맞춤끝",
-    clip_start_col="clip_start",
-    clip_end_col="clip_end",
     label_threshold=0.5
 ):
     """
@@ -232,6 +184,13 @@ def add_annotated_labels_from_excel(
     기존 preprocessed clip의 clip_start/clip_end 기준으로 target만 새로 생성.
     clip_start/clip_end는 절대 annotation 시간으로 덮어쓰지 않음.
     """
+    
+    excel_path="./demographics/0607 호명_시간기록.xlsx"
+    id_col="연구대상자ID"
+    start_col="눈맞춤시작"
+    end_col="눈맞춤끝"
+    clip_start_col="clip_start"
+    clip_end_col="clip_end"
 
     clip_df = clip_df.copy()
 
@@ -408,12 +367,23 @@ def add_annotated_labels_from_excel(
 
 def add_patient_wise_split(
     label_df,
-    test_patient_ids=None,
     val_size=0.2,
     random_state=42
 ):
-    if test_patient_ids is None:
-        test_patient_ids = []
+    
+    test_patient_ids = [
+        "1023101971",
+        "1023102072",
+        "1023102561",
+        "1023102611",
+        "1023102612",
+        "1023102941",
+        "1023103061",
+        "1023103112",
+    ]
+
+    test_patient_ids = [
+    ]
 
     label_df = label_df.copy()
 
@@ -453,7 +423,6 @@ def add_patient_wise_split(
     )
 
     print("\n[PATIENT LABEL QC]")
-    print(patient_label_df["has_eye_contact"].value_counts().sort_index())
 
     # -------------------------
     # 환자 단위 stratified split
@@ -481,11 +450,12 @@ def add_patient_wise_split(
     # split QC
     # -------------------------
 
-    print("[INFO] patient-wise stratified split")
+    print("[INFO] patient-wise stratified split by eye-contact label")
     print("[INFO] train patients:", len(train_patients))
     print("[INFO] val patients:", len(val_patients))
     print("[INFO] test patients:", len(test_patient_ids))
 
+    print("\n[PER SPLIT STRATIFICATION QC]")
     for split in ["train", "val", "test"]:
         split_df = label_df[label_df["split"] == split]
 
@@ -503,9 +473,9 @@ def add_patient_wise_split(
         print(f"\n[{split.upper()}]")
         print("clips:", len(split_df))
         print("patients:", split_df["patient_id"].nunique())
-        print("clip target counts:")
+        print("clip target (정상군 (0) vs 자폐군 (1)) counts:")
         print(split_df["target"].value_counts().sort_index())
-        print("patient eye-contact counts:")
+        print("patient eye-contact (N/Y) counts:")
         print(
             split_patient_df["has_eye_contact"]
             .value_counts()
@@ -513,24 +483,6 @@ def add_patient_wise_split(
         )
 
     return label_df
-
-def compute_metrics(y_true, y_pred, y_prob):
-    metrics = {
-        "accuracy": accuracy_score(y_true, y_pred),
-        "precision": precision_score(y_true, y_pred, zero_division=0),
-        "recall": recall_score(y_true, y_pred, zero_division=0),
-        "f1": f1_score(y_true, y_pred, zero_division=0)
-    }
-
-    try:
-        metrics["auroc"] = roc_auc_score(y_true, y_prob)
-    except ValueError:
-        metrics["auroc"] = None
-
-    return metrics
-
-from sklearn.metrics import f1_score
-from tqdm import tqdm
 
 
 def train_one_epoch(model, loader, optimizer, criterion, threshold=0.5):
@@ -669,8 +621,6 @@ def validate(model, loader, criterion, threshold=0.5):
 def main():
     print("[INFO] Device:", CFG.device)
 
-    from datetime import datetime
-
     exp_id = (
         f"{CFG.label_mode}_"
         f"{CFG.model_name}_"
@@ -681,60 +631,21 @@ def main():
         CFG.checkpoint_path,
         exp_id
     )
-
     os.makedirs(save_dir, exist_ok=True)
-    model_save_path = os.path.join(
-        save_dir,
-        "model.pt"
-    )
 
-    metrics_save_path = os.path.join(
-        save_dir,
-        "metrics.json"
-    )
+    print(f"[INFO] Save dir: {save_dir}")
 
-    config_save_path = os.path.join(
-        save_dir,
-        "config.json"
-    )
-
-    train_pred_path = os.path.join(
-        save_dir,
-        "train_predictions.csv"
-    )
-
-    val_pred_path = os.path.join(
-        save_dir,
-        "val_predictions.csv"
-    )
-
-    csv_name = os.path.splitext(
-        os.path.basename(CFG.clip_csv_path)
-    )[0]
 
     preprocess_dir = os.path.join(
         "/storage/sohyunkang",
-        csv_name
+        os.path.splitext(os.path.basename(CFG.clip_csv_path))[0]
     )
 
-    config_path = os.path.join(
-        preprocess_dir,
-        "preprocess_config.json"
-    )
-
-    with open(config_path, "r") as f:
+    with open(os.path.join(preprocess_dir, "preprocess_config.json"), "r") as f:
         preprocess_cfg = json.load(f)
 
-    with open(
-        os.path.join(save_dir, "preprocess_config.json"),
-        "w"
-    ) as f:
-        json.dump(
-            preprocess_cfg,
-            f,
-            indent=4,
-            ensure_ascii=False
-        )
+    with open(os.path.join(save_dir, "preprocess_config.json"), "w") as f:
+        json.dump(preprocess_cfg, f, indent=4, ensure_ascii=False)
 
     print("[INFO] Loaded preprocess config:")
     print(preprocess_cfg)
@@ -752,39 +663,29 @@ def main():
             except:
                 config_dict[k] = str(v)
 
-    with open(config_save_path, "w") as f:
+    with open(os.path.join(save_dir, "config.json"), "w") as f:
         json.dump(
             config_dict,
             f,
             indent=4,
             ensure_ascii=False
         )
-
+ 
     clip_df = pd.read_csv(CFG.clip_csv_path)
 
-    if CFG.label_mode == "annotated_labels":
-        clip_df = add_annotated_labels_from_excel(
-            clip_df=clip_df,
-            excel_path=CFG.annotated_excel_path,
-            id_col=CFG.annotated_id_col,
-            start_col=CFG.annotated_start_col,
-            end_col=CFG.annotated_end_col,
-            clip_start_col=CFG.clip_start_col,
-            clip_end_col=CFG.clip_end_col,
-            label_threshold=CFG.iou_label_threshold
-        )
-
-    elif CFG.label_mode == "pseudo_labels":
+    if CFG.label_mode == "pseudo_labels":
         print("[INFO] Using pseudo labels from clip CSV")
         print(clip_df["target"].value_counts(dropna=False))
+
+    elif CFG.label_mode == "annotated_labels":
+        clip_df = add_annotated_labels_from_excel(
+            clip_df=clip_df,
+            label_threshold=CFG.iou_label_threshold
+        )
 
     elif CFG.label_mode == "diagnosis_labels":
         clip_df = add_diagnosis_labels_from_rpmp(
             clip_df=clip_df,
-            excel_path=CFG.diagnosis_excel_path,
-            id_col=CFG.diagnosis_id_col,
-            group_col=CFG.diagnosis_group_col,
-            label_map=CFG.diagnosis_label_map
         )
         clip_df["pseudo_label"] = clip_df["label"].copy()
         clip_df["pseudo_target"] = clip_df["target"].copy()
@@ -792,41 +693,15 @@ def main():
     else:
         raise ValueError(
             f"Unknown label_mode: {CFG.label_mode}. "
-            "Use 'pseudo_labels' or 'annotated_labels'."
+            "Use 'pseudo_labels' or 'annotated_labels or 'diagnosis_labels'."
         )
-
-    TEST_PATIENT_IDS = [
-        "1023101971",
-        "1023102072",
-        "1023102561",
-        "1023102611",
-        "1023102612",
-        "1023102941",
-        "1023103061",
-        "1023103112",
-    ]
-    TEST_PATIENT_IDS = [
-    ]
-
+    
+    print("\n[DATA SPLIT]")
     clip_df = add_patient_wise_split(
-        clip_df,
-        test_patient_ids=TEST_PATIENT_IDS
-    )
+        clip_df)
 
     train_clip_df = clip_df[clip_df["split"] == "train"].reset_index(drop=True)
     val_clip_df = clip_df[clip_df["split"] == "val"].reset_index(drop=True)
-
-    print("\n[DATA SPLIT]")
-    print(
-        f"train={len(train_clip_df)}, "
-        f"val={len(val_clip_df)}"
-    )
-
-    print("\n[TRAIN TARGET]")
-    print(train_clip_df["target"].value_counts().sort_index())
-
-    print("\n[VAL TARGET]")
-    print(val_clip_df["target"].value_counts().sort_index())
 
     if CFG.debug_mode:
         train_clip_df = train_clip_df.sample(
@@ -918,12 +793,11 @@ def main():
     print("[INFO] pos:", pos)
     print("[INFO] class weights:", class_weights)
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-
-    # criterion = FocalLoss(
-    #     alpha=class_weights,
-    #     gamma=2.0
-    # )
+    if CFG.label_mode == "diagnosis_labels":
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+    else:
+        criterion = FocalLoss(alpha=class_weights, gamma=2.0)
+    
     encoder_params = []
     head_params = []
 
@@ -937,12 +811,11 @@ def main():
 
     optimizer = torch.optim.AdamW(
         [
-            {"params": encoder_params, "lr": CFG.lr * 0.01},
-            {"params": head_params, "lr": CFG.lr},
+            {"params": encoder_params, "lr": CFG.encoder_lr},
+            {"params": head_params, "lr": CFG.head_lr},
         ],
         weight_decay=1e-4
     )
-    # optimizer = torch.optim.AdamW(model.parameters(), lr=CFG.lr)
 
     best_f1 = 0.0
 
@@ -975,7 +848,7 @@ def main():
                 else model.state_dict()
             )
 
-            torch.save(state_dict, model_save_path)
+            torch.save(state_dict, os.path.join(save_dir, "model.pt"))
 
             best_metrics = {
                 "epoch": epoch + 1,
@@ -990,21 +863,21 @@ def main():
                 "debug_mode": CFG.debug_mode,
             }
 
-            with open(metrics_save_path, "w") as f:
+            with open(os.path.join(save_dir,"metrics.json"), "w") as f:
                 json.dump(best_metrics, f, indent=4)
 
             train_pred_df.to_csv(
-                train_pred_path,
+                os.path.join(save_dir, "train_predictions.csv"),
                 index=False
             )
 
             val_pred_df.to_csv(
-                val_pred_path,
+                os.path.join(save_dir, "val_predictions.csv"),
                 index=False
             )
 
-            print(f"[INFO] Saved best model: {model_save_path}")
-            print(f"[INFO] Saved best metrics: {metrics_save_path}")
+            print(f"[INFO] Saved best model: { os.path.join(save_dir,"model.pt")}")
+            print(f"[INFO] Saved best metrics: {os.path.join(save_dir,'metrics.json')}")
 
     print("\n[INFO] Training finished.")
     print("[INFO] Best validation F1:", best_f1)

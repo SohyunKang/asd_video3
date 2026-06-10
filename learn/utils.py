@@ -332,3 +332,4 @@ def read_clip(
     frames = np.stack(frames).astype(np.float32) / 255.0
 
     return frames
+

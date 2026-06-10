@@ -6,7 +6,7 @@ class Simple3DCNN(nn.Module):
     def __init__(self, num_classes=2):
         super().__init__()
 
-        self.features = nn.Sequential(
+        self.encoder = nn.Sequential(
             nn.Conv3d(3, 32, kernel_size=3, padding=1),
             nn.BatchNorm3d(32),
             nn.ReLU(),
@@ -28,7 +28,7 @@ class Simple3DCNN(nn.Module):
         self.classifier = nn.Linear(self.feature_dim, num_classes)
 
     def extract_features(self, x):
-        x = self.features(x)
+        x = self.encoder(x)
         x = x.flatten(1)
         return x
 
