@@ -34,7 +34,7 @@ class VideoDiagnosisDataset(Dataset):
         self,
         clip_df,
         num_clips_per_video=8,
-        random_window=True
+        random_window=False
     ):
 
         self.video_ids = list(
@@ -64,29 +64,29 @@ class VideoDiagnosisDataset(Dataset):
         else:
             positive_idx = []
 
-        if len(positive_idx) > 0:
-            # 첫 eye-contact 시점 중심
-            center = int(positive_idx[0])
+        # if len(positive_idx) > 0:
+        #     # 첫 eye-contact 시점 중심
+        #     center = int(positive_idx[0])
 
-            # stride=0.5초 기준, ±12 clip = 약 ±6초
-            offsets = np.linspace(
-                -12,
-                12,
-                k,
-                dtype=int
-            )
+        #     # stride=0.5초 기준, ±12 clip = 약 ±6초
+        #     offsets = np.linspace(
+        #         -12,
+        #         12,
+        #         k,
+        #         dtype=int
+        #     )
 
-            indices = center + offsets
-            indices = np.clip(indices, 0, n - 1)
+        #     indices = center + offsets
+        #     indices = np.clip(indices, 0, n - 1)
 
-        else:
-            # eye-contact가 없으면 전체 영상에서 균등 샘플링
-            indices = np.linspace(
-                0,
-                n - 1,
-                k,
-                dtype=int
-            )
+        # else:
+        # eye-contact가 없으면 전체 영상에서 균등 샘플링
+        indices = np.linspace(
+            0,
+            n - 1,
+            k,
+            dtype=int
+        )
 
         indices = np.unique(indices)
 

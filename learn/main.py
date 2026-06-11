@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from sklearn.metrics import f1_score
+from sklearn.metrics import accuracy_score
 
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
@@ -36,9 +36,13 @@ class CFG:
     # "pseudo_labels" or "annotated_labels" or "diagnosis_labels"
     video_level = True
 
-    freeze_encoder = False
+    freeze_encoder = True
 
     num_classes = 2
+
+    classifier_num_layers = 1
+    classifier_hidden_dim = 512
+    classifier_dropout = 0.3
 
     iou_label_threshold = 0.5
 
@@ -517,10 +521,9 @@ def train_one_epoch(model, loader, optimizer, criterion, threshold=0.5):
         y_pred.extend(preds.cpu().numpy())
         y_prob.extend(probs.detach().cpu().numpy())
 
-        running_f1 = f1_score(
+        running_acc = accuracy_score(
             y_true,
             y_pred,
-            zero_division=0
         )
 
         pos_rate_pred = sum(y_pred) / len(y_pred)
@@ -528,7 +531,7 @@ def train_one_epoch(model, loader, optimizer, criterion, threshold=0.5):
 
         pbar.set_postfix(
             loss=f"{loss.item():.4f}",
-            f1=f"{running_f1:.4f}",
+            auroc=f"{running_acc:.4f}",
             pos_pred=int(sum(y_pred)),
             pos_true=int(sum(y_true)),
             pred_rate=f"{pos_rate_pred:.3f}",
@@ -584,15 +587,14 @@ def validate(model, loader, criterion, threshold=0.5):
         y_pred.extend(preds.cpu().numpy())
         y_prob.extend(probs.cpu().numpy())
 
-        running_f1 = f1_score(
+        running_acc = accuracy_score(
             y_true,
-            y_pred,
-            zero_division=0
+            y_pred
         )
 
         pbar.set_postfix(
             loss=f"{loss.item():.4f}",
-            f1=f"{running_f1:.4f}",
+            auroc=f"{running_acc:.4f}",
             pos_true=int(sum(y_true)),
             pos_pred=int(sum(y_pred))
         )
@@ -684,11 +686,11 @@ def main():
         )
 
     elif CFG.label_mode == "diagnosis_labels":
+        clip_df["pseudo_label"] = clip_df["label"].copy()
+        clip_df["pseudo_target"] = clip_df["target"].copy()
         clip_df = add_diagnosis_labels_from_rpmp(
             clip_df=clip_df,
         )
-        clip_df["pseudo_label"] = clip_df["label"].copy()
-        clip_df["pseudo_target"] = clip_df["target"].copy()
 
     else:
         raise ValueError(
@@ -751,7 +753,10 @@ def main():
         model_name=CFG.model_name,
         num_classes=CFG.num_classes,
         freeze_encoder=CFG.freeze_encoder,
-        video_level=CFG.video_level
+        video_level=CFG.video_level,
+        classifier_num_layers=CFG.classifier_num_layers,
+        classifier_hidden_dim=CFG.classifier_hidden_dim,
+        classifier_dropout=CFG.classifier_dropout,
     )
 
     if torch.cuda.device_count() > 1:
@@ -817,7 +822,7 @@ def main():
         weight_decay=1e-4
     )
 
-    best_f1 = 0.0
+    best_auc = 0.0
 
     for epoch in range(CFG.epochs):
         print(f"\n[Epoch {epoch + 1}/{CFG.epochs}]")
@@ -839,8 +844,8 @@ def main():
         print("[Val]", val_metrics)
 
        
-        if val_metrics["f1"] > best_f1:
-            best_f1 = val_metrics["f1"]
+        if val_metrics["auroc"] > best_auc:
+            best_auc = val_metrics["auroc"]
     
             state_dict = (
                 model.module.state_dict()
@@ -852,13 +857,14 @@ def main():
 
             best_metrics = {
                 "epoch": epoch + 1,
-                "best_val_f1": best_f1,
+                "best_val_auc": best_auc,
                 "train_metrics": train_metrics,
                 "val_metrics": val_metrics,
                 "model_name": CFG.model_name,
                 "clip_csv_path": CFG.clip_csv_path,
                 "batch_size": CFG.batch_size,
-                "lr": CFG.lr,
+                "encoder_lr": CFG.encoder_lr,
+                "head_lr": CFG.head_lr,
                 "epochs": CFG.epochs,
                 "debug_mode": CFG.debug_mode,
             }
@@ -876,11 +882,11 @@ def main():
                 index=False
             )
 
-            print(f"[INFO] Saved best model: { os.path.join(save_dir,"model.pt")}")
+            print(f"[INFO] Saved best model: {os.path.join(save_dir,'model.pt')}")
             print(f"[INFO] Saved best metrics: {os.path.join(save_dir,'metrics.json')}")
 
     print("\n[INFO] Training finished.")
-    print("[INFO] Best validation F1:", best_f1)
+    print("[INFO] Best validation AUROC:", best_auc)
 
 
 if __name__ == "__main__":

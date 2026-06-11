@@ -74,36 +74,42 @@ class TimeSformerClassifier(nn.Module):
 
 
 class MeanMaxVideoClassifier(nn.Module):
-    """
-    입력:
-        x: [B, N, C, T, H, W]
-           B = video batch
-           N = clips per video
-
-    동작:
-        clip feature 추출
-        mean pooling + max pooling
-        video-level classification
-    """
-    def __init__(self, clip_encoder, num_classes=2):
+    def __init__(
+        self,
+        clip_encoder,
+        num_classes=2,
+        classifier_num_layers=0,
+        classifier_hidden_dim=512,
+        classifier_dropout=0.3,
+    ):
         super().__init__()
 
         self.clip_encoder = clip_encoder
         feature_dim = clip_encoder.feature_dim
 
-        self.classifier = nn.Sequential(
-            nn.Linear(feature_dim * 2, 512),
-            nn.LayerNorm(512),
-            nn.ReLU(),
-            nn.Dropout(0.3),
+        input_dim = feature_dim * 2
 
-            nn.Linear(512, 128),
-            nn.LayerNorm(128),
-            nn.ReLU(),
-            nn.Dropout(0.3),
+        if classifier_num_layers == 0:
+            self.classifier = nn.Linear(input_dim, num_classes)
 
-            nn.Linear(128, num_classes)
-        )
+        else:
+            layers = []
+            prev_dim = input_dim
+
+            for _ in range(classifier_num_layers):
+                layers.extend([
+                    nn.Linear(prev_dim, classifier_hidden_dim),
+                    nn.LayerNorm(classifier_hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(classifier_dropout),
+                ])
+                prev_dim = classifier_hidden_dim
+
+            layers.append(
+                nn.Linear(prev_dim, num_classes)
+            )
+
+            self.classifier = nn.Sequential(*layers)
 
     def forward(self, x):
         b, n, c, t, h, w = x.shape
@@ -130,7 +136,10 @@ def build_model(
     model_name="simple3dcnn",
     num_classes=2,
     freeze_encoder=False,
-    video_level=False
+    video_level=False,
+    classifier_num_layers=0,
+    classifier_hidden_dim=512,
+    classifier_dropout=0.3,
 ):
     if model_name == "simple3dcnn":
         clip_model = Simple3DCNN(num_classes=num_classes)
@@ -147,7 +156,10 @@ def build_model(
     if video_level:
         return MeanMaxVideoClassifier(
             clip_encoder=clip_model,
-            num_classes=num_classes
+            num_classes=num_classes,
+            classifier_num_layers=classifier_num_layers,
+            classifier_hidden_dim=classifier_hidden_dim,
+            classifier_dropout=classifier_dropout,
         )
 
     return clip_model
