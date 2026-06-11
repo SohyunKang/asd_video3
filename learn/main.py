@@ -36,11 +36,11 @@ class CFG:
     # "pseudo_labels" or "annotated_labels" or "diagnosis_labels"
     video_level = True
 
-    freeze_encoder = True
+    freeze_encoder = False
 
     num_classes = 2
 
-    classifier_num_layers = 1
+    classifier_num_layers = 0
     classifier_hidden_dim = 512
     classifier_dropout = 0.3
 
@@ -531,7 +531,7 @@ def train_one_epoch(model, loader, optimizer, criterion, threshold=0.5):
 
         pbar.set_postfix(
             loss=f"{loss.item():.4f}",
-            auroc=f"{running_acc:.4f}",
+            acc=f"{running_acc:.4f}",
             pos_pred=int(sum(y_pred)),
             pos_true=int(sum(y_true)),
             pred_rate=f"{pos_rate_pred:.3f}",
@@ -594,7 +594,7 @@ def validate(model, loader, criterion, threshold=0.5):
 
         pbar.set_postfix(
             loss=f"{loss.item():.4f}",
-            auroc=f"{running_acc:.4f}",
+            acc=f"{running_acc:.4f}",
             pos_true=int(sum(y_true)),
             pos_pred=int(sum(y_pred))
         )
@@ -844,7 +844,7 @@ def main():
         print("[Val]", val_metrics)
 
        
-        if val_metrics["auroc"] > best_auc:
+        if val_metrics["auroc"] > best_auc and 0.6 < val_metrics["recall"] < 0.8:
             best_auc = val_metrics["auroc"]
     
             state_dict = (
