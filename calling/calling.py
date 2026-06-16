@@ -1,13 +1,14 @@
 import re
 import torch
 import whisper
+import whisperx
 import librosa
 import pandas as pd
 from pathlib import Path
 
 
 VIDEO_PATH = "/storage/sohyunkang/video_data/IF2001_3_1_1423111761_0.mp4.mp4"
-OUTPUT_CSV = "call_detection_result.csv"
+OUTPUT_CSV = "./calling/call_detection_result.csv"
 
 SEARCH_START_SEC = 0.0
 SEARCH_END_SEC = 15.0
@@ -45,17 +46,49 @@ def run_silero_vad(y, sr):
 
 
 def transcribe_with_whisper(video_path):
-    model = whisper.load_model(
+    # model = whisper.load_model(
+    #     "small",
+    #     device=DEVICE
+    # )
+
+    # result = model.transcribe(
+    #     video_path,
+    #     language="ko",
+    #     fp16=(DEVICE == "cuda"),
+    #     verbose=False
+    # )
+
+
+    audio = whisperx.load_audio(video_path)
+
+    model = whisperx.load_model(
         "small",
+        device=DEVICE,
+        language="ko"
+    )
+
+    result = model.transcribe(audio)
+
+    align_model, metadata = whisperx.load_align_model(
+        language_code="ko",
         device=DEVICE
     )
 
-    result = model.transcribe(
-        video_path,
-        language="ko",
-        fp16=(DEVICE == "cuda"),
-        verbose=False
+    result = whisperx.align(
+        result["segments"],
+        align_model,
+        metadata,
+        audio,
+        DEVICE
     )
+
+    for seg in result["segments"]:
+        for word in seg["words"]:
+            print(
+                word["word"],
+                word["start"],
+                word["end"]
+            )
 
     return result["segments"]
 

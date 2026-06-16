@@ -87,3 +87,6 @@ preprocessed_clips_*/
 experiments/
 *.xlsx
 *.png
+*.jpg
+*.mp4
+*.wav

@@ -39,6 +39,7 @@ class CFG:
     freeze_encoder = False
 
     num_classes = 2
+    num_clips_per_video = 8
 
     classifier_num_layers = 0
     classifier_hidden_dim = 512
@@ -53,7 +54,7 @@ class CFG:
 
     epochs = 15
 
-    encoder_lr = 1e-5
+    encoder_lr = 1e-6
     head_lr = 1e-4
 
     debug_mode = False
@@ -488,6 +489,176 @@ def add_patient_wise_split(
 
     return label_df
 
+def normalize_video_id(x):
+    name = str(x).strip()
+    while name.lower().endswith(".mp4"):
+        name = name[:-4]
+    return name
+
+
+def extract_patient_id(video_id):
+    # IF2001_1_1_1023032001_0 -> 1023032001
+    parts = str(video_id).split("_")
+    if len(parts) >= 5:
+        return parts[3]
+    return None
+
+
+def load_first_call_start_map(call_excel_path):
+    call_df = pd.read_excel(call_excel_path)
+
+    call_df["video_id_norm"] = call_df["video_id"].apply(normalize_video_id)
+    call_df["patient_id"] = call_df["video_id_norm"].apply(extract_patient_id)
+
+    call_df["is_call_candidate"] = (
+        call_df["is_call_candidate"]
+        .astype(str)
+        .str.upper()
+        .eq("TRUE")
+    )
+
+    call_df["call_start"] = pd.to_numeric(
+        call_df["call_start"],
+        errors="coerce"
+    )
+
+    call_df = call_df[
+        call_df["is_call_candidate"]
+        & call_df["patient_id"].notna()
+        & call_df["call_start"].notna()
+    ].copy()
+
+    first_call_df = (
+        call_df
+        .sort_values(["patient_id", "call_start"])
+        .drop_duplicates(subset=["patient_id"], keep="first")
+    )
+
+    call_start_map = dict(
+        zip(
+            first_call_df["patient_id"].astype(str),
+            first_call_df["call_start"].astype(float)
+        )
+    )
+
+    print("[INFO] patients with call_start:", len(call_start_map))
+
+    return call_start_map
+
+@torch.no_grad()
+def save_val_clip_ablation_importance(
+    model,
+    val_dataset,
+    save_path,
+    device,
+    target_class=1
+):
+    model.eval()
+
+    rows = []
+
+    for idx in range(len(val_dataset)):
+        clips, label, patient_id = val_dataset[idx]
+
+        video_id = val_dataset.video_ids[idx]
+        selected_g = val_dataset.get_selected_clip_df(video_id)
+        clips_batch = clips.unsqueeze(0).to(device)
+
+        logits = model(clips_batch)
+        base_prob = torch.softmax(logits, dim=1)[0, target_class].item()
+        pred = int(base_prob >= 0.5)
+
+        for clip_i in range(clips.shape[0]):
+            masked = clips_batch.clone()
+            masked[:, clip_i] = 0
+
+            masked_logits = model(masked)
+            masked_prob = torch.softmax(
+                masked_logits,
+                dim=1
+            )[0, target_class].item()
+
+            importance = base_prob - masked_prob
+
+            row_info = selected_g.iloc[clip_i]
+
+            rows.append({
+                "patient_id": patient_id,
+                "video_id": video_id,
+                "true": int(label),
+                "pred": pred,
+                "base_prob": base_prob,
+
+                "clip_index": clip_i,
+                "clip_start": row_info["clip_start"],
+                "clip_end": row_info["clip_end"],
+                "npy_path": row_info["npy_path"],
+
+                "prob_without_clip": masked_prob,
+                "importance": importance,
+            })
+
+    importance_df = pd.DataFrame(rows)
+
+    importance_df.to_csv(
+        save_path,
+        index=False
+    )
+
+    print(f"[INFO] Saved val clip ablation importance: {save_path}")
+
+import cv2
+
+def save_val_montages(
+    val_dataset,
+    save_dir,
+    max_videos=None
+):
+    montage_dir = os.path.join(save_dir, "val_montages")
+    os.makedirs(montage_dir, exist_ok=True)
+
+    n = len(val_dataset)
+    if max_videos is not None:
+        n = min(n, max_videos)
+
+    for idx in range(n):
+        clips, label, patient_id = val_dataset[idx]
+        video_id = val_dataset.video_ids[idx]
+
+        frames_for_montage = []
+
+        for clip_i in range(clips.shape[0]):
+            clip = clips[clip_i]
+            mid_t = clip.shape[1] // 2
+
+            frame = clip[:, mid_t]
+            frame = frame.permute(1, 2, 0).cpu().numpy()
+            frame = np.clip(frame * 255, 0, 255).astype(np.uint8)
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+            cv2.putText(
+                frame_bgr,
+                f"{clip_i}",
+                (8, 24),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA
+            )
+
+            frames_for_montage.append(frame_bgr)
+
+        montage = np.concatenate(frames_for_montage, axis=1)
+
+        save_path = os.path.join(
+            montage_dir,
+            f"{patient_id}_{video_id}_true{int(label)}.jpg"
+        )
+
+        cv2.imwrite(save_path, montage)
+
+    print(f"[INFO] Saved validation montages: {montage_dir}")
 
 def train_one_epoch(model, loader, optimizer, criterion, threshold=0.5):
     model.train()
@@ -675,6 +846,130 @@ def main():
  
     clip_df = pd.read_csv(CFG.clip_csv_path)
 
+    # data QC - 데이터 이상 제외
+    EXCLUDE_PATIENT_IDS = [
+       "1023050311",
+       "1023092434",
+       "1023110861",
+       "1023111472",
+       "1024031034",
+       "1024040343",
+       "1024041272",
+       "1024041433",
+       "1024041681",
+       "1024042581",
+       "1024042906",
+       "1024042909",
+       "1024042943",
+       "1024052692",
+       "1023072931",
+       "1023110671",
+       "1023122041",
+       "1024032743",
+       "1024090941",
+       "1024110641",
+       "1024110931",
+       "1024111491",
+       "1024111984",
+       "1024112742",
+       "1124081215",
+       "1124041312",
+       "1124062612",
+       "1724061202",
+       "1223063011",
+       "1123072711",
+       "1423091451",
+    ]
+
+    clip_df["patient_id"] = (
+        clip_df["patient_id"]
+        .astype(str)
+        .str.strip()
+    )
+
+    before_n = len(clip_df)
+
+    clip_df = clip_df[
+        ~clip_df["patient_id"].isin(EXCLUDE_PATIENT_IDS)
+    ].copy()
+
+    print(
+        f"[INFO] excluded patients: {len(EXCLUDE_PATIENT_IDS)}"
+    )
+    print(
+        f"[INFO] clips after exclusion: "
+        f"{before_n} -> {len(clip_df)}"
+    )
+
+    # Calling excel에서 호명 시작 시간 불러와서 clip_df에 병합
+    CALL_EXCEL_PATH = "./calling/results/call_detection_all.xlsx"
+
+    call_start_map = load_first_call_start_map(
+        CALL_EXCEL_PATH
+    )
+
+    clip_df["patient_id"] = clip_df["patient_id"].astype(str)
+
+    clip_df["call_start"] = clip_df["patient_id"].map(call_start_map)
+
+    clip_df["call_start"] = clip_df["call_start"].fillna(0.0)
+
+    before_n = len(clip_df)
+
+    prev_clip_df = (
+        clip_df[
+            clip_df["clip_start"] < clip_df["call_start"]
+        ]
+        .sort_values(["patient_id", "clip_start"])
+        .groupby("patient_id")
+        .tail(1)
+    )
+
+    after_clip_df = clip_df[
+        clip_df["clip_start"] >= clip_df["call_start"]
+    ]
+
+    clip_df = pd.concat(
+        [after_clip_df, prev_clip_df],
+        ignore_index=True
+    )
+
+    clip_df = (
+        clip_df
+        .drop_duplicates(subset=["video_id", "clip_start", "clip_end"])
+        .sort_values(["patient_id", "clip_start"])
+        .reset_index(drop=True)
+    )
+
+    clip_df["clip_start_from_call"] = (
+        clip_df["clip_start"] - clip_df["call_start"]
+    )
+
+    clip_df["clip_end_from_call"] = (
+        clip_df["clip_end"] - clip_df["call_start"]
+    )
+
+
+    print("[INFO] clips after call_start filtering:")
+    print(f"{before_n} -> {len(clip_df)}")
+
+    check_df = (
+        clip_df
+        .sort_values(["patient_id", "clip_start"])
+        .groupby("patient_id")
+        .head(3)
+    )
+
+    print(
+        check_df[
+            [
+                "patient_id",
+                "call_start",
+                "clip_start"
+            ]
+        ]
+    )
+
     if CFG.label_mode == "pseudo_labels":
         print("[INFO] Using pseudo labels from clip CSV")
         print(clip_df["target"].value_counts(dropna=False))
@@ -727,14 +1022,20 @@ def main():
     if CFG.video_level:
         print("\n[INFO] Using video-level classification")
         print("[INFO] Building video-level model with mean-max pooling")
-        train_dataset = VideoDiagnosisDataset(train_clip_df)
-        val_dataset = VideoDiagnosisDataset(val_clip_df)
+        train_dataset = VideoDiagnosisDataset(train_clip_df, num_clips_per_video=CFG.num_clips_per_video)
+        val_dataset = VideoDiagnosisDataset(val_clip_df, num_clips_per_video=CFG.num_clips_per_video)
     else:
         print("\n[INFO] Using clip-level classification")
         print("[INFO] Building clip-level model")
         train_dataset = PreprocessedClipDataset(train_clip_df)
         val_dataset = PreprocessedClipDataset(val_clip_df)
 
+    
+    save_val_montages(
+        val_dataset=val_dataset,
+        save_dir=save_dir,
+    )
+        
     train_loader = DataLoader(
         train_dataset,
         batch_size=CFG.batch_size,
@@ -844,7 +1145,8 @@ def main():
         print("[Val]", val_metrics)
 
        
-        if val_metrics["auroc"] > best_auc and 0.6 < val_metrics["recall"] < 0.8:
+        # if val_metrics["auroc"] > best_auc and 0.6 <= val_metrics["recall"] and val_metrics["precision"] >= 0.6:
+        if val_metrics["auroc"] > best_auc:
             best_auc = val_metrics["auroc"]
     
             state_dict = (
@@ -884,6 +1186,18 @@ def main():
 
             print(f"[INFO] Saved best model: {os.path.join(save_dir,'model.pt')}")
             print(f"[INFO] Saved best metrics: {os.path.join(save_dir,'metrics.json')}")
+
+            save_val_clip_ablation_importance(
+                model=model,
+                val_dataset=val_dataset,
+                save_path=os.path.join(
+                    save_dir,
+                    "val_clip_ablation_importance.csv"
+                ),
+                device=CFG.device,
+                target_class=1
+            )
+
 
     print("\n[INFO] Training finished.")
     print("[INFO] Best validation AUROC:", best_auc)
