@@ -208,14 +208,11 @@ def get_video_duration(video_path):
 
     return n_frames / fps
 
-
 def get_person_detector():
     from ultralytics import YOLO
-    return YOLO("yolov8n.pt")
-
+    return YOLO("yolov8l.pt")
 
 _PERSON_DETECTOR = None
-
 
 def crop_center(frame, crop_ratio=0.8):
     h, w, _ = frame.shape

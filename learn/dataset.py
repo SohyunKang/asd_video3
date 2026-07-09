@@ -28,14 +28,19 @@ class PreprocessedClipDataset(Dataset):
         row = self.clip_df.iloc[idx]
 
         frames = np.load(row["npy_path"]).astype(np.float32) / 255.0
+
         frames = torch.from_numpy(frames).float()
         frames = frames.permute(3, 0, 1, 2)  # [C, T, H, W]
 
         label = 1 if row["label"] == "eye_contact" else 0
         label = torch.tensor(label, dtype=torch.long)
 
-        return frames, label
+        patient_id = str(row["patient_id"])
+        video_id = str(row["video_id"])
+        clip_start = float(row["clip_start"])
+        clip_end = float(row["clip_end"])
 
+        return frames, label, patient_id, video_id, clip_start, clip_end
 
 class VideoDiagnosisDataset(Dataset):
     def __init__(
@@ -131,6 +136,142 @@ class VideoDiagnosisDataset(Dataset):
         return clips, label, patient_id
 
 
+class FrameNpyClipDataset(torch.utils.data.Dataset):
+    def __init__(self, clip_df, num_frames=8):
+        self.clip_df = clip_df.reset_index(drop=True)
+        self.num_frames = num_frames
+        self.cache = {}
+
+    def _load_video(self, npy_path):
+        if npy_path not in self.cache:
+            self.cache[npy_path] = np.load(npy_path, mmap_mode="r")
+        return self.cache[npy_path]
+
+    def __len__(self):
+        return len(self.clip_df)
+
+    def __getitem__(self, idx):
+        row = self.clip_df.iloc[idx]
+
+        arr = self._load_video(row["video_npy_path"])
+
+        fps = float(row["fps"])
+        start_frame = int(float(row["clip_start"]) * fps)
+        end_frame = int(float(row["clip_end"]) * fps)
+
+        end_frame = min(end_frame, len(arr) - 1)
+
+        frame_idxs = np.linspace(
+            start_frame,
+            end_frame,
+            self.num_frames,
+            endpoint=False,
+            dtype=int
+        )
+
+        frame_idxs = np.clip(frame_idxs, 0, len(arr) - 1)
+
+        clip = arr[frame_idxs]  # [T, H, W, C], uint8
+
+        clip = torch.from_numpy(clip.copy()).float() / 255.0
+        clip = clip.permute(3, 0, 1, 2)  # [C, T, H, W]
+
+        label = torch.tensor(int(row["target"]), dtype=torch.long)
+
+        return (
+            clip,
+            label,
+            str(row["patient_id"]),
+            str(row["video_id"]),
+            float(row["clip_start"]),
+            float(row["clip_end"]),
+        )
+
+class VideoFrameNpyDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        clip_df,
+        num_clips_per_video=15,
+        num_frames=8,
+        random_window=False,
+    ):
+        self.clip_df = clip_df.reset_index(drop=True)
+        self.video_ids = list(self.clip_df["video_id"].unique())
+        self.num_clips_per_video = num_clips_per_video
+        self.num_frames = num_frames
+        self.random_window = random_window
+        self.cache = {}
+
+        self.video_map = {}
+
+        for video_id, g in self.clip_df.groupby("video_id"):
+            self.video_map[video_id] = (
+                g.sort_values("clip_start")
+                .reset_index(drop=True)
+            )
+
+    def _load_video(self, npy_path):
+        if npy_path not in self.cache:
+            self.cache[npy_path] = np.load(npy_path, mmap_mode="r")
+        return self.cache[npy_path]
+
+    def get_selected_clip_df(self, video_id):
+        g = self.video_map[video_id]
+
+        if len(g) >= self.num_clips_per_video:
+            if self.random_window:
+                max_start = len(g) - self.num_clips_per_video
+                start = np.random.randint(0, max_start + 1)
+                return g.iloc[start:start + self.num_clips_per_video].reset_index(drop=True)
+            else:
+                return g.head(self.num_clips_per_video).reset_index(drop=True)
+
+        return g.reset_index(drop=True)
+
+    def __len__(self):
+        return len(self.video_ids)
+
+    def __getitem__(self, idx):
+        video_id = self.video_ids[idx]
+        g = self.get_selected_clip_df(video_id)
+
+        clips = []
+
+        for _, row in g.iterrows():
+            arr = self._load_video(row["video_npy_path"])
+
+            fps = float(row["fps"])
+            start_frame = int(float(row["clip_start"]) * fps)
+            end_frame = int(float(row["clip_end"]) * fps)
+            end_frame = min(end_frame, len(arr) - 1)
+
+            frame_idxs = np.linspace(
+                start_frame,
+                end_frame,
+                self.num_frames,
+                endpoint=False,
+                dtype=int
+            )
+
+            frame_idxs = np.clip(frame_idxs, 0, len(arr) - 1)
+
+            clip = arr[frame_idxs]  # [T,H,W,C]
+            clip = torch.from_numpy(clip.copy()).float() / 255.0
+            clip = clip.permute(3, 0, 1, 2)  # [C,T,H,W]
+
+            clips.append(clip)
+
+        # clip 개수가 부족하면 마지막 clip 반복 padding
+        while len(clips) < self.num_clips_per_video:
+            clips.append(clips[-1].clone())
+
+        clips = torch.stack(clips, dim=0)  # [N,C,T,H,W]
+
+        label = torch.tensor(int(g["target"].max()), dtype=torch.long)
+        patient_id = str(g["patient_id"].iloc[0])
+
+        return clips, label, patient_id
+    
 def build_clip_table(
     label_df,
     split,

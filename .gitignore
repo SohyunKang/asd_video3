@@ -90,3 +90,5 @@ experiments/
 *.jpg
 *.mp4
 *.wav
+*.npz
+/home/sohyunkang/asd_video3/calling/byyerin/*

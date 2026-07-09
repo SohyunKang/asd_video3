@@ -574,7 +574,8 @@ def process_video_single_crop(video_path, crop_ratio):
     has_pupil_detection = False
 
     base_name = os.path.basename(video_path)
-    video_id = base_name.replace(".mp4.mp4", "")
+    video_id = base_name.replace(".mp4", "")
+    video_id = base_name.replace(".mp4", "")
 
     temp_json = os.path.join(
         LABEL_ROOT,
@@ -781,7 +782,9 @@ def process_video_single_crop(video_path, crop_ratio):
 
 def process_video(video_path):
     base_name = os.path.basename(video_path)
-    video_id = base_name.replace(".mp4.mp4", "")
+    video_id = base_name.replace(".mp4", "")
+    video_id = base_name.replace(".mp4", "")
+
 
     crop_ratios = [0.8, 0.5, 0.35]
 
@@ -877,7 +880,7 @@ def main():
     pattern = os.path.join(
         VIDEO_ROOT,
         "**",
-        "IF2001*.mp4.mp4"
+        "IF2001*.mp4"
     )
 
     video_paths = glob.glob(
@@ -896,12 +899,13 @@ def main():
 
 
     for video_path in video_paths:
-        # if "1023103112" not in video_path:
-        #     continue
+        if "1023103112_0_fu" not in video_path:
+            continue
         start = time.time()
 
         base_name = os.path.basename(video_path)
-        video_id = base_name.replace(".mp4.mp4", "")
+        video_id = base_name.replace(".mp4", "")
+        video_id = base_name.replace(".mp4", "")
 
         true_json_path = os.path.join(
             RESULT_TRUE_ROOT,

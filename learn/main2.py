@@ -29,29 +29,35 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from dataset import (
-    PreprocessedClipDataset,
-    VideoDiagnosisDataset,
+    FrameNpyClipDataset,
+    VideoFrameNpyDataset,
 )
 from losses import FocalLoss
 from model import build_model
 from metrics import compute_metrics
 
 class CFG:
-    video_root = "/storage/sohyunkang/video_data"
-    clip_csv_path = "./preprocessing/results/renew_preprocessed_clips_person_1.0_8_0.5_32.csv"
-    checkpoint_path = './experiments'
-    model_name = "timesformer"  # "3dcnn", "timesformer", "videomae"
+    frame_metadata_path = "/storage/sohyunkang/preprocessed_video_frames_person_track_landscape_224/video_frame_metadata.csv"
 
-    label_mode = "annotated_labels"
+    clip_duration = 1.0
+    stride = 0.5
+    num_frames = 8
+
+    clip_csv_path = None  # 이제 안 씀
+
+    checkpoint_path = './experiments'
+    model_name = "videomae"  # "3dcnn", "timesformer", "videomae"
+
+    label_mode = "diagnosis_labels"
     # "pseudo_labels" or "annotated_labels" or "diagnosis_labels"
-    video_level = False
+    video_level = True
 
     freeze_encoder = False
 
     num_classes = 2
     n_splits = 5
     # None이면 모든 fold 실행. 예: [0] 또는 [0, 2, 4]만 실행/저장
-    target_folds = [3]
+    target_folds = None
     num_clips_per_video = 15
 
     classifier_num_layers = 3
@@ -62,7 +68,7 @@ class CFG:
     mil_hidden_dim = 64
     return_attention = False
 
-    iou_label_threshold = 0.3
+    iou_label_threshold = 0.2
 
     seed = 42
 
@@ -86,57 +92,225 @@ class CFG:
 
 # data QC - 데이터 이상 제외
 EXCLUDE_PATIENT_IDS = [
-        "1023050311",
-        "1023092434",
-        "1023110861",
-        "1023111472",
-        "1024031034",
-        "1024040343",
-        "1024041272",
-        "1024041433",
-        "1024041681",
-        "1024042581",
-        "1024042906",
-        "1024042909",
-        "1024042943",
-        "1024052692",
-        "1023072931",
-        "1023110671",
-        "1023122041",
-        "1024032743",
-        "1024090941",
-        "1024110641",
-        "1024110931",
-        "1024111491",
-        "1024111984",
-        "1024112742",
-        "1124081215",
-        "1124041312",
-        "1124062612",
-        "1724061202",
-        "1223063011",
-        "1123072711",
-        "1423091451",
-        "1523111651",
-        "1723041201",
-        "1724053101",
-        "1724061202",
-        "1724071201",
-        "1724080605",
-        "1724082302",
-        "1724082306",
-        "1724082310",
-        "1123100912",
-        "1123120611",
-        "1124032311",
-        "1724072403",
-        "1124102811",
-        "1323101711",
-        "1423102481",
-        "1523101351",
-        "1023061961",
-        "1123051111",
+        # "1023050311",
+        # "1023092434",
+        # "1023110861",
+        # "1023111472",
+        # "1024031034",
+        # "1024040343",
+        # "1024041272",
+        # "1024041433",
+        # "1024041681",
+        # "1024042581",
+        # "1024042906",
+        # "1024042909",
+        # "1024042943",
+        # "1024052692",
+        # "1023072931",
+        # "1023110671",
+        # "1023122041",
+        # "1024032743",
+        # "1024090941",
+        # "1024110641",
+        # "1024110931",
+        # "1024111491",
+        # "1024111984",
+        # "1024112742",
+        # "1124081215",
+        # "1124041312",
+        # "1124062612",
+        # "1724061202",
+        # "1223063011",
+        # "1123072711",
+        # "1423091451",
+        # "1523111651",
+        # "1723041201",
+        # "1724053101",
+        # "1724061202",
+        # "1724071201",
+        # "1724080605",
+        # "1724082302",
+        # "1724082306",
+        # "1724082310",
+        # "1123100912",
+        # "1123120611",
+        # "1124032311",
+        # "1724072403",
+        # "1124102811",
+        # "1323101711",
+        # "1423102481",
+        # "1523101351",
+        # "1023061961",
+        # "1123051111",
     ]
+
+def apply_cli_overrides():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--folds",
+        type=str,
+        default=None,
+        help="Fold indices to run, e.g. '0', '0,2,4', or 'all'. Overrides CFG.target_folds."
+    )
+
+    parser.add_argument("--model_name", type=str, default=None)
+    parser.add_argument("--clip_duration", type=float, default=None)
+    parser.add_argument("--num_clips_per_video", type=int, default=None)
+    parser.add_argument("--stride", type=float, default=None)
+    parser.add_argument("--num_frames", type=int, default=None)
+    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--epochs", type=int, default=None)
+
+    parser.add_argument("--classifier_num_layers", type=int, default=None)
+    parser.add_argument("--classifier_hidden_dim", type=int, default=None)
+    parser.add_argument("--classifier_dropout", type=float, default=None)
+
+    parser.add_argument("--encoder_lr", type=float, default=None)
+    parser.add_argument("--head_lr", type=float, default=None)
+    parser.add_argument("--weight_decay", type=float, default=None)
+
+    parser.add_argument("--iou_label_threshold", type=float, default=None)
+
+    args = parser.parse_args()
+
+    if args.folds is not None:
+        CFG.target_folds = args.folds
+
+    if args.model_name is not None:
+        CFG.model_name = args.model_name
+
+    if args.clip_duration is not None:
+        CFG.clip_duration = args.clip_duration
+
+    if args.num_clips_per_video is not None:
+        CFG.num_clips_per_video = args.num_clips_per_video
+
+    if args.stride is not None:
+        CFG.stride = args.stride
+
+    if args.num_frames is not None:
+        CFG.num_frames = args.num_frames
+
+    if args.batch_size is not None:
+        CFG.batch_size = args.batch_size
+
+    if args.epochs is not None:
+        CFG.epochs = args.epochs
+
+    if args.classifier_num_layers is not None:
+        CFG.classifier_num_layers = args.classifier_num_layers
+
+    if args.classifier_hidden_dim is not None:
+        CFG.classifier_hidden_dim = args.classifier_hidden_dim
+
+    if args.classifier_dropout is not None:
+        CFG.classifier_dropout = args.classifier_dropout
+
+    if args.encoder_lr is not None:
+        CFG.encoder_lr = args.encoder_lr
+
+    if args.head_lr is not None:
+        CFG.head_lr = args.head_lr
+
+    if args.weight_decay is not None:
+        CFG.weight_decay = args.weight_decay
+
+    if args.iou_label_threshold is not None:
+        CFG.iou_label_threshold = args.iou_label_threshold
+
+    if CFG.model_name == "videomae" and CFG.num_frames != 16:
+        raise ValueError(
+            f"VideoMAE는 num_frames=16이어야 합니다. "
+            f"현재 num_frames={CFG.num_frames}"
+        )
+
+
+    print("[CLI CONFIG]")
+    print("model_name:", CFG.model_name)
+    print("clip_duration:", CFG.clip_duration)
+    print("stride:", CFG.stride)
+    print("num_frames:", CFG.num_frames)
+    print("batch_size:", CFG.batch_size)
+    print("epochs:", CFG.epochs)
+    print("classifier_num_layers:", CFG.classifier_num_layers)
+    print("classifier_hidden_dim:", CFG.classifier_hidden_dim)
+    print("classifier_dropout:", CFG.classifier_dropout)
+    print("encoder_lr:", CFG.encoder_lr)
+    print("head_lr:", CFG.head_lr)
+    print("weight_decay:", CFG.weight_decay)
+    print("target_folds:", CFG.target_folds)
+
+def build_clip_df_from_frame_metadata():
+    meta_df = pd.read_csv(CFG.frame_metadata_path)
+
+    meta_df = meta_df[
+        meta_df["status"].isin(["saved", "skipped_exists"])
+    ].copy()
+
+    meta_df["patient_id"] = meta_df["patient_id"].astype(str).str.strip()
+    meta_df["video_id"] = meta_df["video_id"].astype(str).str.strip()
+
+    # 실제 npy가 있는 것만 사용
+    meta_df = meta_df[
+        meta_df["npy_path"].apply(os.path.exists)
+    ].copy()
+
+    rows = []
+
+    for _, row in meta_df.iterrows():
+        fps = pd.to_numeric(row.get("fps", np.nan), errors="coerce")
+        saved_n_frames = pd.to_numeric(row.get("saved_n_frames", np.nan), errors="coerce")
+
+        if pd.isna(saved_n_frames) or saved_n_frames <= 0:
+            arr = np.load(row["npy_path"], mmap_mode="r")
+            saved_n_frames = len(arr)
+        else:
+            saved_n_frames = int(saved_n_frames)
+
+        if pd.isna(fps) or fps <= 0:
+            video_path = row.get("video_path", None)
+
+            if video_path is not None and os.path.exists(str(video_path)):
+                cap = cv2.VideoCapture(str(video_path))
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                cap.release()
+
+            if pd.isna(fps) or fps <= 0:
+                print("[WARN] invalid fps, skip:", row.get("video_id"), row.get("npy_path"))
+                continue
+
+        max_time = saved_n_frames / fps
+
+        start = 0.0
+
+        while start + CFG.clip_duration <= max_time:
+            end = start + CFG.clip_duration
+
+            rows.append({
+                "patient_id": str(row["patient_id"]),
+                "visit": row.get("visit", "baseline"),
+                "video_id": str(row["video_id"]),
+                "base_video_id": row.get("base_video_id", row["video_id"]),
+                "video_npy_path": row["npy_path"],
+                "npy_path": row["npy_path"],
+                "fps": fps,
+                "saved_n_frames": saved_n_frames,
+                "clip_start": start,
+                "clip_end": end,
+                "label": "unknown",
+                "target": -1,
+            })
+
+            start += CFG.stride
+
+    clip_df = pd.DataFrame(rows)
+
+    print("[INFO] built clip_df from frame metadata:", len(clip_df))
+    print("[INFO] videos:", clip_df["video_id"].nunique())
+    print("[INFO] patients:", clip_df["patient_id"].nunique())
+
+    return clip_df
 
 def limit_clips_per_patient_before_split(
     clip_df,
@@ -275,6 +449,12 @@ def add_diagnosis_labels_from_rpmp(
         .str.strip()
     )
 
+    rpmp_df[id_col] = (
+        rpmp_df[id_col]
+        .astype(str)
+        .str.strip()
+    )
+
     before_n = len(clip_df)
 
     clip_df = clip_df.merge(
@@ -304,27 +484,44 @@ def add_diagnosis_labels_from_rpmp(
 
     return clip_df
 
+def normalize_visit(x):
+    x = str(x).strip().lower()
+
+    mapping = {
+        "bl": "baseline",
+        "fu": "fu",
+    }
+
+    return mapping.get(x, x)
+
+
 def add_annotated_labels_from_excel(
     clip_df,
     label_threshold=0.5
 ):
-    """
-    annotation excel의 눈맞춤 시작/끝을 이용해
-    기존 preprocessed clip의 clip_start/clip_end 기준으로 target만 새로 생성.
-    clip_start/clip_end는 절대 annotation 시간으로 덮어쓰지 않음.
-    """
-    
-    excel_path="./demographics/0626 호명_시간기록.xlsx"
-    id_col="연구대상자ID"
-    start_col_idx = 6   # G열(0부터 시작)
-    end_col_idx = 7     # H열
-    clip_start_col="clip_start"
-    clip_end_col="clip_end"
+    excel_path = "./demographics/0626 호명_시간기록.xlsx"
+    id_col = "연구대상자ID"
+    visit_col = "방문"
+
+    start_col_idx = 6
+    end_col_idx = 7
+
+    clip_start_col = "clip_start"
+    clip_end_col = "clip_end"
 
     clip_df = clip_df.copy()
 
     anno_df = pd.read_excel(excel_path, header=1)
     anno_df.columns = anno_df.columns.astype(str).str.strip()
+
+    if id_col not in anno_df.columns:
+        raise ValueError(f"annotation Excel에 {id_col} 컬럼이 없습니다.")
+
+    if visit_col not in anno_df.columns:
+        raise ValueError(
+            f"annotation Excel에 {visit_col} 컬럼이 없습니다. "
+            "baseline/fu 구분을 위해 '방문' 컬럼을 추가하세요."
+        )
 
     anno_df[id_col] = (
         anno_df[id_col]
@@ -332,18 +529,21 @@ def add_annotated_labels_from_excel(
         .str.strip()
     )
 
+    anno_df[visit_col] = anno_df[visit_col].apply(normalize_visit)
+
     start_col = anno_df.columns[start_col_idx]
     end_col = anno_df.columns[end_col_idx]
 
     print(f"[INFO] start column: {start_col}")
     print(f"[INFO] end column: {end_col}")
+    print(f"[INFO] visit column: {visit_col}")
+    print("[INFO] annotation visit counts:")
+    print(anno_df[visit_col].value_counts(dropna=False))
 
     def is_negative_annotation(start_value, end_value):
         start = str(start_value).strip()
         end = str(end_value).strip()
-
         return start == "(-)" and end == "(-)"
-
 
     def is_valid_time_annotation(start_value, end_value):
         start_list = parse_times_to_sec_list(start_value)
@@ -359,7 +559,6 @@ def add_annotated_labels_from_excel(
                 return True
 
         return False
-
 
     valid_annotation_mask = anno_df.apply(
         lambda row: (
@@ -377,74 +576,33 @@ def add_annotated_labels_from_excel(
         valid_annotation_mask
     ].copy()
 
-    annotated_subjects = set(
-        anno_df_valid[id_col]
-        .astype(str)
-        .str.strip()
+    annotated_keys = set(
+        zip(
+            anno_df_valid[id_col].astype(str).str.strip(),
+            anno_df_valid[visit_col].astype(str).str.strip().str.lower()
+        )
     )
 
     print("[INFO] annotation rows total:", len(anno_df))
     print("[INFO] valid annotation rows:", len(anno_df_valid))
     print("[INFO] invalid annotation rows excluded:", len(invalid_annotation_df))
-    print("[INFO] annotated subjects used:", len(annotated_subjects))
+    print("[INFO] annotated patient+visit used:", len(annotated_keys))
 
-    # 실제 eye-contact interval은 정상 시간 형식인 행만 사용
-    anno_df = anno_df_valid.copy()
-
-    anno_df["start_list"] = anno_df[start_col].apply(parse_times_to_sec_list)
-    anno_df["end_list"] = anno_df[end_col].apply(parse_times_to_sec_list)
-
-    # bad_interval_rows = []
-
-    # for _, row in anno_df.iterrows():
-    #     patient_id = str(row[id_col]).strip()
-
-    #     start_list = row["start_list"]
-    #     end_list = row["end_list"]
-
-    #     n = min(len(start_list), len(end_list))
-
-    #     if n == 0:
-    #         bad_interval_rows.append({
-    #             id_col: patient_id,
-    #             "start_raw": row[start_col],
-    #             "end_raw": row[end_col],
-    #             "reason": "empty parsed list",
-    #         })
-    #         continue
-
-    #     for i in range(n):
-    #         start_sec = start_list[i]
-    #         end_sec = end_list[i]
-
-    #         if end_sec <= start_sec:
-    #             bad_interval_rows.append({
-    #                 id_col: patient_id,
-    #                 "start_raw": row[start_col],
-    #                 "end_raw": row[end_col],
-    #                 "start_sec": start_sec,
-    #                 "end_sec": end_sec,
-    #                 "reason": "end <= start",
-    #             })
-
-    # pd.DataFrame(bad_interval_rows).to_csv(
-    #     "bad_interval_debug.csv",
-    #     index=False,
-    #     encoding="utf-8-sig"
-    # )
-
-    # print("[DEBUG] bad intervals:", len(bad_interval_rows))
+    anno_df_valid["start_list"] = anno_df_valid[start_col].apply(parse_times_to_sec_list)
+    anno_df_valid["end_list"] = anno_df_valid[end_col].apply(parse_times_to_sec_list)
 
     expanded_rows = []
 
-    for _, row in anno_df.iterrows():
+    for _, row in anno_df_valid.iterrows():
         patient_id = str(row[id_col]).strip()
+        visit = normalize_visit(row[visit_col])
 
         start_list = row["start_list"]
         end_list = row["end_list"]
 
         n = min(len(start_list), len(end_list))
 
+        # (-), (-)인 경우: interval은 없지만 annotated_keys에는 남아있음
         for i in range(n):
             start_sec = start_list[i]
             end_sec = end_list[i]
@@ -452,14 +610,18 @@ def add_annotated_labels_from_excel(
             if end_sec > start_sec:
                 expanded_rows.append({
                     id_col: patient_id,
+                    visit_col: visit,
                     start_col: start_sec,
                     end_col: end_sec,
                 })
 
-    anno_df = pd.DataFrame(expanded_rows)
+    anno_interval_df = pd.DataFrame(expanded_rows)
 
     if "patient_id" not in clip_df.columns:
         raise ValueError("clip_df에 patient_id 컬럼이 필요합니다.")
+
+    if "visit" not in clip_df.columns:
+        raise ValueError("clip_df에 visit 컬럼이 필요합니다.")
 
     if clip_start_col not in clip_df.columns:
         raise ValueError(f"clip_df에 {clip_start_col} 컬럼이 없습니다.")
@@ -473,6 +635,8 @@ def add_annotated_labels_from_excel(
         .str.strip()
     )
 
+    clip_df["visit"] = clip_df["visit"].apply(normalize_visit)
+
     clip_df[clip_start_col] = pd.to_numeric(
         clip_df[clip_start_col],
         errors="coerce"
@@ -485,23 +649,27 @@ def add_annotated_labels_from_excel(
 
     before_n = len(clip_df)
 
-    available_patients = set(
-        clip_df["patient_id"].astype(str).str.strip().unique()
+    available_keys = set(
+        zip(
+            clip_df["patient_id"].astype(str).str.strip(),
+            clip_df["visit"].astype(str).str.strip().str.lower()
+        )
     )
 
-    missing_subjects = sorted(
-        annotated_subjects - available_patients
+    missing_keys = sorted(
+        annotated_keys - available_keys
     )
 
-    print("[DEBUG] available patients before annotation filter:", len(available_patients))
-    print("[DEBUG] annotated subjects:", len(annotated_subjects))
-    print("[DEBUG] annotated but missing in clip_df:", len(missing_subjects))
-    print("[DEBUG] first missing subjects:")
-    print(missing_subjects[:50])
+    print("[DEBUG] available patient+visit before annotation filter:", len(available_keys))
+    print("[DEBUG] annotated patient+visit:", len(annotated_keys))
+    print("[DEBUG] annotated but missing in clip_df:", len(missing_keys))
+    print("[DEBUG] first missing patient+visit:")
+    print(missing_keys[:50])
 
-    missing_df = pd.DataFrame({
-        "patient_id": missing_subjects
-    })
+    missing_df = pd.DataFrame(
+        missing_keys,
+        columns=["patient_id", "visit"]
+    )
 
     missing_df["excluded_patient"] = missing_df["patient_id"].isin(EXCLUDE_PATIENT_IDS)
 
@@ -514,42 +682,81 @@ def add_annotated_labels_from_excel(
     print("[DEBUG] saved: missing_annotated_subjects_debug.csv")
     print(missing_df["excluded_patient"].value_counts(dropna=False))
 
-    # annotation 있는 subject만 사용
+    clip_df["anno_key"] = list(
+        zip(
+            clip_df["patient_id"].astype(str).str.strip(),
+            clip_df["visit"].astype(str).str.strip().str.lower()
+        )
+    )
+
     clip_df = clip_df[
-        clip_df["patient_id"].isin(annotated_subjects)
+        clip_df["anno_key"].isin(annotated_keys)
     ].copy()
 
     after_n = len(clip_df)
 
-    print("[INFO] Annotated mode: using only annotated subjects")
+    print("\n[INFO] Subjects by visit after annotation filtering")
+
+    visit_patient_count = (
+        clip_df
+        .groupby("visit")["patient_id"]
+        .nunique()
+        .sort_index()
+    )
+
+    visit_video_count = (
+        clip_df
+        .groupby("visit")["video_id"]
+        .nunique()
+        .sort_index()
+    )
+
+    visit_clip_count = (
+        clip_df["visit"]
+        .value_counts()
+        .sort_index()
+    )
+
+    print("Patients")
+    print(visit_patient_count)
+
+    print("\nVideos")
+    print(visit_video_count)
+
+    print("\nClips")
+    print(visit_clip_count)
+
+    print("[INFO] Annotated mode: using only annotated patient+visit")
     print(f"[INFO] clips before filtering: {before_n}")
     print(f"[INFO] clips after filtering: {after_n}")
     print(f"[INFO] removed clips: {before_n - after_n}")
 
     if len(clip_df) == 0:
         raise ValueError(
-            "Annotated subjects와 clip_df['patient_id']가 매칭되지 않아 clip이 0개입니다."
+            "annotation의 patient_id+visit와 clip_df가 매칭되지 않아 clip이 0개입니다."
         )
 
     anno_map = {}
 
-    for subject, g in anno_df.groupby(id_col):
-        subject = str(subject).strip()
+    if len(anno_interval_df) > 0:
+        for (subject, visit), g in anno_interval_df.groupby([id_col, visit_col]):
+            subject = str(subject).strip()
+            visit = normalize_visit(visit)
 
-        anno_map[subject] = [
-            (
-                float(row[start_col]),
-                float(row[end_col])
-            )
-            for _, row in g.iterrows()
-        ]
+            anno_map[(subject, visit)] = [
+                (
+                    float(row[start_col]),
+                    float(row[end_col])
+                )
+                for _, row in g.iterrows()
+            ]
 
     targets = []
 
     for _, row in clip_df.iterrows():
         patient_id = str(row["patient_id"]).strip()
+        visit = normalize_visit(row["visit"])
 
-        # 이것은 preprocessed clip의 시간
         clip_start = row[clip_start_col]
         clip_end = row[clip_end_col]
 
@@ -558,7 +765,7 @@ def add_annotated_labels_from_excel(
             continue
 
         clip_duration = clip_end - clip_start
-        intervals = anno_map.get(patient_id, [])
+        intervals = anno_map.get((patient_id, visit), [])
 
         max_overlap_ratio = 0.0
 
@@ -575,18 +782,25 @@ def add_annotated_labels_from_excel(
             1 if max_overlap_ratio >= label_threshold else 0
         )
 
-    # target은 binary
     clip_df["target"] = targets
 
-    # label은 기존 dataset 코드와 맞게 문자열
     clip_df["label"] = [
         "eye_contact" if t == 1 else "non_eye_contact"
         for t in targets
     ]
 
+    clip_df = clip_df.drop(columns=["anno_key"])
+
     print("[INFO] Annotated labels applied")
     print("[INFO] label counts:")
     print(clip_df["target"].value_counts(dropna=False))
+
+    print("[INFO] label counts by visit:")
+    print(
+        clip_df.groupby("visit")["target"]
+        .value_counts()
+        .sort_index()
+    )
 
     return clip_df
 
@@ -800,6 +1014,32 @@ def load_first_call_start_map_from_json(json_path):
         len(call_start_map)
     )
 
+    return call_start_map
+
+def load_first_call_start_map_from_json_by_video(json_path):
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    call_start_map = {}
+
+    for item in data:
+        video_id = normalize_video_id(str(item.get("id", "")).strip())
+
+        call_segments = item.get("call_segments", [])
+        call_starts = []
+
+        for seg in call_segments:
+            if seg.get("callname", False):
+                start = seg.get("start")
+                if start is not None:
+                    call_starts.append(float(start))
+
+        if len(call_starts) == 0:
+            continue
+
+        call_start_map[video_id] = min(call_starts)
+
+    print("[INFO] videos with call_start json:", len(call_start_map))
     return call_start_map
 
 #importance > 0
@@ -1249,26 +1489,27 @@ def make_config_dict():
 
     return config_dict
 
-
 def build_datasets(train_clip_df, val_clip_df):
-    if CFG.label_mode == "diagnosis_labels":
-        print("\n[INFO] Using video-level classification")
-        print("[INFO] Building video-level model with mean-max pooling")
-
-        train_dataset = VideoDiagnosisDataset(
+    if CFG.video_level:
+        train_dataset = VideoFrameNpyDataset(
             train_clip_df,
-            num_clips_per_video=CFG.num_clips_per_video
+            num_clips_per_video=CFG.num_clips_per_video,
+            num_frames=CFG.num_frames
         )
-        val_dataset = VideoDiagnosisDataset(
+        val_dataset = VideoFrameNpyDataset(
             val_clip_df,
-            num_clips_per_video=CFG.num_clips_per_video
+            num_clips_per_video=CFG.num_clips_per_video,
+            num_frames=CFG.num_frames
         )
     else:
-        print("\n[INFO] Using clip-level classification")
-        print("[INFO] Building clip-level model")
-
-        train_dataset = PreprocessedClipDataset(train_clip_df)
-        val_dataset = PreprocessedClipDataset(val_clip_df)
+        train_dataset = FrameNpyClipDataset(
+            train_clip_df,
+            num_frames=CFG.num_frames
+        )
+        val_dataset = FrameNpyClipDataset(
+            val_clip_df,
+            num_frames=CFG.num_frames
+        )
 
     return train_dataset, val_dataset
 
@@ -1334,7 +1575,8 @@ def build_criterion(train_clip_df):
     if neg == 0:
         raise ValueError("Negative samples are 0 in this training fold.")
 
-    pos_weight = np.sqrt(neg / pos)
+    # pos_weight = np.sqrt(neg / pos)
+    pos_weight = neg / pos
 
     class_weights = torch.tensor(
         [1.0, pos_weight],
@@ -1381,9 +1623,8 @@ def build_optimizer(model):
 
 
 def prepare_clip_dataframe():
-    clip_df = pd.read_csv(CFG.clip_csv_path)
-
-    
+    clip_df = build_clip_df_from_frame_metadata()
+    add_qc_step("metadata", after_df=clip_df)
 
     clip_df["patient_id"] = (
         clip_df["patient_id"]
@@ -1391,54 +1632,53 @@ def prepare_clip_dataframe():
         .str.strip()
     )
 
-    before_n = len(clip_df)
+    before_df = clip_df.copy()
 
     clip_df = clip_df[
         ~clip_df["patient_id"].isin(EXCLUDE_PATIENT_IDS)
     ].copy()
 
-    print(f"[INFO] excluded patients: {len(EXCLUDE_PATIENT_IDS)}")
-    print(f"[INFO] clips after exclusion: {before_n} -> {len(clip_df)}")
+    add_qc_step("exclude_patients", before_df, clip_df)
 
     # Calling excel에서 호명 시작 시간 불러와서 clip_df에 병합
     # CALL_PATH = "./calling/results/call_detection_all.xlsx"
-    CALL_PATH = "./demographics/251002_hybrid_results_filtered_callname_onlycalltrue.json"
-
+    CALL_PATH = "./demographics/260707_add_new_videos.json"
+    
+    before_df = clip_df.copy()
     if CALL_PATH.lower().endswith(".json"):
-        call_start_map = load_first_call_start_map_from_json(
-            CALL_PATH
-        )
+        call_start_map = load_first_call_start_map_from_json_by_video(CALL_PATH)
     else:
-        call_start_map = load_first_call_start_map(
-            CALL_PATH
-        )
+        raise ValueError("현재는 JSON call_start를 video_id 기준으로 쓰도록 수정하세요.")
 
-    clip_df["patient_id"] = clip_df["patient_id"].astype(str)
-    clip_df["call_start"] = clip_df["patient_id"].map(call_start_map)
-    # clip_df["call_start"] = clip_df["call_start"].fillna(0.0)
-    clip_df["patient_id"] = clip_df["patient_id"].astype(str)
-    clip_df["call_start"] = clip_df["patient_id"].map(call_start_map)
+    clip_df["video_id_norm"] = clip_df["video_id"].apply(normalize_video_id)
+    clip_df["call_start"] = clip_df["video_id_norm"].map(call_start_map)
+
+    clip_df["has_call_start"] = clip_df["call_start"].notna()
+
+    print("[INFO] videos with call_start in clip_df:",
+        clip_df.loc[clip_df["has_call_start"], "video_id"].nunique())
+    print("[INFO] videos without call_start in clip_df:",
+        clip_df.loc[~clip_df["has_call_start"], "video_id"].nunique())
+
+    print("[INFO] patient+visit with call_start:")
+    print(
+        clip_df[clip_df["has_call_start"]]
+        .drop_duplicates(["patient_id", "visit"])
+        ["visit"]
+        .value_counts()
+    )
 
     clip_df["has_call_start"] = clip_df["call_start"].notna()
 
     # call_start 없는 경우는 기존처럼 0초 기준 유지
-    clip_df["call_start"] = clip_df["call_start"].fillna(0.0)
+    clip_df = clip_df[
+        clip_df["has_call_start"]
+    ].copy()
 
-    print("[INFO] patients with call_start in clip_df:",
-        clip_df.loc[clip_df["has_call_start"], "patient_id"].nunique())
-    print("[INFO] patients without call_start in clip_df:",
-      clip_df.loc[~clip_df["has_call_start"], "patient_id"].nunique())
-
-   # ===========================
-    # diagnosis에서만 filtering
-    # ===========================
-    # if CFG.label_mode == "diagnosis_labels":
-
-    before_n = len(clip_df)
 
     prev_clip_df = (
         clip_df[clip_df["clip_start"] < clip_df["call_start"]]
-        .sort_values(["patient_id", "clip_start"])
+        .sort_values(["patient_id", "visit", "clip_start"])
         .groupby("patient_id")
         .tail(1)
     )
@@ -1467,15 +1707,10 @@ def prepare_clip_dataframe():
         clip_df["clip_end"] - clip_df["call_start"]
     )
 
-    print("[INFO] clips after call_start filtering:")
-    print(f"{before_n} -> {len(clip_df)}")
+    add_qc_step("call_start_filter", before_df, clip_df)
 
-    # else:
-        # print("[INFO] Skip call_start filtering for annotated/pseudo labels")
 
-        # clip_df["clip_start_from_call"] = clip_df["clip_start"]
-        # clip_df["clip_end_from_call"] = clip_df["clip_end"]
-
+    before_df = clip_df.copy()
 
     if CFG.label_mode == "pseudo_labels":
         print("[INFO] Using pseudo labels from clip CSV")
@@ -1498,6 +1733,9 @@ def prepare_clip_dataframe():
             "Use 'pseudo_labels', 'annotated_labels', or 'diagnosis_labels'."
         )
     
+    
+    add_qc_step("annotation_filter", before_df, clip_df)
+
     target_video_ids = load_target_video_ids(
         CFG.target_video_list_path
     )
@@ -1507,12 +1745,15 @@ def prepare_clip_dataframe():
         target_video_ids
     )
 
+    before_df = clip_df.copy()
     clip_df = limit_clips_per_patient_before_split(
         clip_df,
         max_clips_per_patient=CFG.num_clips_per_video
     )
+    
+    add_qc_step("clip_limit", before_df, clip_df)
 
-
+    print_qc_summary()
     print("\n[DATA SPLIT]")
 
     # clip_df = add_patient_wise_folds(
@@ -1826,19 +2067,6 @@ def parse_target_folds(value, n_splits):
     return folds
 
 
-def apply_cli_overrides():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--folds",
-        type=str,
-        default=None,
-        help="Fold indices to run, e.g. '0', '0,2,4', or 'all'. Overrides CFG.target_folds."
-    )
-    args = parser.parse_args()
-
-    if args.folds is not None:
-        CFG.target_folds = args.folds
-
 def keyboard_listener():
     global SKIP_CURRENT_FOLD, STOP_ALL
 
@@ -1852,6 +2080,67 @@ def keyboard_listener():
             STOP_ALL = True
             break
 
+QC_ROWS = []
+
+def get_unit_counts(df):
+    patient_visit = (
+        df[["patient_id", "visit"]]
+        .drop_duplicates()
+        .shape[0]
+        if "visit" in df.columns else df["patient_id"].nunique()
+    )
+
+    return {
+        "clips": len(df),
+        "patients": df["patient_id"].nunique(),
+        "patient_visit": patient_visit,
+        "baseline_pv": df[df["visit"] == "baseline"][["patient_id", "visit"]].drop_duplicates().shape[0] if "visit" in df.columns else 0,
+        "fu_pv": df[df["visit"] == "fu"][["patient_id", "visit"]].drop_duplicates().shape[0] if "visit" in df.columns else 0,
+    }
+
+
+def add_qc_step(step, before_df=None, after_df=None):
+    if before_df is None:
+        after = get_unit_counts(after_df)
+        row = {
+            "step": step,
+            "before_clips": None,
+            "after_clips": after["clips"],
+            "dropped_clips": None,
+            "before_patient_visit": None,
+            "after_patient_visit": after["patient_visit"],
+            "dropped_patient_visit": None,
+            "after_patients": after["patients"],
+            "after_baseline_pv": after["baseline_pv"],
+            "after_fu_pv": after["fu_pv"],
+        }
+    else:
+        before = get_unit_counts(before_df)
+        after = get_unit_counts(after_df)
+
+        row = {
+            "step": step,
+            "before_clips": before["clips"],
+            "after_clips": after["clips"],
+            "dropped_clips": before["clips"] - after["clips"],
+            "before_patient_visit": before["patient_visit"],
+            "after_patient_visit": after["patient_visit"],
+            "dropped_patient_visit": before["patient_visit"] - after["patient_visit"],
+            "after_patients": after["patients"],
+            "after_baseline_pv": after["baseline_pv"],
+            "after_fu_pv": after["fu_pv"],
+        }
+
+    QC_ROWS.append(row)
+
+
+def print_qc_summary():
+    qc_df = pd.DataFrame(QC_ROWS)
+
+    print("\n" + "=" * 100)
+    print("[DATA QC SUMMARY]")
+    print("=" * 100)
+    print(qc_df.to_string(index=False))
 
 def main():
     
@@ -1871,10 +2160,7 @@ def main():
 
     print(f"[INFO] Save dir: {save_dir}")
 
-    preprocess_dir = os.path.join(
-        "/storage/sohyunkang",
-        os.path.splitext(os.path.basename(CFG.clip_csv_path))[0]
-    )
+    preprocess_dir = os.path.dirname(CFG.frame_metadata_path)
 
     with open(os.path.join(preprocess_dir, "preprocess_config.json"), "r") as f:
         preprocess_cfg = json.load(f)

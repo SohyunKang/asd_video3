@@ -52,6 +52,8 @@ class TimeSformerClassifier(nn.Module):
             pretrained_model_name
         )
 
+        self.encoder.gradient_checkpointing_enable()
+
         self.feature_dim = self.encoder.config.hidden_size
         self.classifier = nn.Linear(self.feature_dim, num_classes)
 
@@ -67,6 +69,30 @@ class TimeSformerClassifier(nn.Module):
         outputs = self.encoder(pixel_values=x)
         cls_token = outputs.last_hidden_state[:, 0]
         return cls_token
+
+    def forward(self, x):
+        feat = self.extract_features(x)
+        return self.classifier(feat)
+    
+
+class VideoMAEClassifier(nn.Module):
+    def __init__(self, num_classes=2):
+        super().__init__()
+
+        from transformers import VideoMAEModel
+
+        self.encoder = VideoMAEModel.from_pretrained(
+            "MCG-NJU/videomae-base-finetuned-kinetics"
+        )
+
+        self.feature_dim = self.encoder.config.hidden_size
+        self.classifier = nn.Linear(self.feature_dim, num_classes)
+
+    def extract_features(self, x):
+        # x: [B, C, T, H, W]
+        x = x.permute(0, 2, 1, 3, 4)
+        out = self.encoder(pixel_values=x)
+        return out.last_hidden_state[:, 0]
 
     def forward(self, x):
         feat = self.extract_features(x)
@@ -137,9 +163,12 @@ def build_model(
     num_classes=2,
     freeze_encoder=False,
     video_level=False,
+    pooling="meanmax",  # "meanmax" or "attention_mil"
     classifier_num_layers=0,
     classifier_hidden_dim=512,
     classifier_dropout=0.3,
+    mil_hidden_dim=256,
+    return_attention=False,
 ):
     if model_name == "simple3dcnn":
         clip_model = Simple3DCNN(num_classes=num_classes)
@@ -149,17 +178,133 @@ def build_model(
             num_classes=num_classes,
             freeze_encoder=freeze_encoder
         )
+    elif model_name == "videomae":
+        clip_model = VideoMAEClassifier(num_classes=num_classes)
 
     else:
         raise ValueError(f"Unknown model_name: {model_name}")
 
     if video_level:
-        return MeanMaxVideoClassifier(
-            clip_encoder=clip_model,
-            num_classes=num_classes,
-            classifier_num_layers=classifier_num_layers,
-            classifier_hidden_dim=classifier_hidden_dim,
-            classifier_dropout=classifier_dropout,
-        )
+        if pooling == "meanmax":
+            return MeanMaxVideoClassifier(
+                clip_encoder=clip_model,
+                num_classes=num_classes,
+                classifier_num_layers=classifier_num_layers,
+                classifier_hidden_dim=classifier_hidden_dim,
+                classifier_dropout=classifier_dropout,
+            )
+
+        elif pooling == "attention_mil":
+            return AttentionMILVideoClassifier(
+                clip_encoder=clip_model,
+                num_classes=num_classes,
+                mil_hidden_dim=mil_hidden_dim,
+                classifier_num_layers=classifier_num_layers,
+                classifier_hidden_dim=classifier_hidden_dim,
+                classifier_dropout=classifier_dropout,
+                return_attention=return_attention,
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown pooling: {pooling}. "
+                "Use 'meanmax' or 'attention_mil'."
+            )
 
     return clip_model
+
+class AttentionMILPooling(nn.Module):
+    def __init__(
+        self,
+        feature_dim,
+        hidden_dim=256,
+        dropout=0.3
+    ):
+        super().__init__()
+
+        self.attention = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, clip_feat):
+        """
+        clip_feat: [B, N, D]
+        """
+        attn_logits = self.attention(clip_feat)  # [B, N, 1]
+        attn_weights = torch.softmax(attn_logits, dim=1)  # [B, N, 1]
+
+        video_feat = torch.sum(
+            attn_weights * clip_feat,
+            dim=1
+        )  # [B, D]
+
+        return video_feat, attn_weights.squeeze(-1)
+    
+class AttentionMILVideoClassifier(nn.Module):
+    def __init__(
+        self,
+        clip_encoder,
+        num_classes=2,
+        mil_hidden_dim=256,
+        classifier_num_layers=0,
+        classifier_hidden_dim=512,
+        classifier_dropout=0.3,
+        return_attention=False,
+    ):
+        super().__init__()
+
+        self.clip_encoder = clip_encoder
+        self.return_attention = return_attention
+
+        feature_dim = clip_encoder.feature_dim
+
+        self.pooling = AttentionMILPooling(
+            feature_dim=feature_dim,
+            hidden_dim=mil_hidden_dim,
+            dropout=classifier_dropout
+        )
+
+        input_dim = feature_dim
+
+        if classifier_num_layers == 0:
+            self.classifier = nn.Linear(input_dim, num_classes)
+        else:
+            layers = []
+            prev_dim = input_dim
+
+            for _ in range(classifier_num_layers):
+                layers.extend([
+                    nn.Linear(prev_dim, classifier_hidden_dim),
+                    nn.LayerNorm(classifier_hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(classifier_dropout),
+                ])
+                prev_dim = classifier_hidden_dim
+
+            layers.append(nn.Linear(prev_dim, num_classes))
+            self.classifier = nn.Sequential(*layers)
+
+    def forward(self, x):
+        """
+        x: [B, N, C, T, H, W]
+        """
+        b, n, c, t, h, w = x.shape
+
+        x = x.view(b * n, c, t, h, w)
+
+        clip_feat = self.clip_encoder.extract_features(x)
+        clip_feat = clip_feat.view(b, n, -1)
+
+        video_feat, attn_weights = self.pooling(clip_feat)
+
+        logits = self.classifier(video_feat)
+
+        if self.return_attention:
+            return logits, attn_weights
+
+        return logits
+    
+
